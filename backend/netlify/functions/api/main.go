@@ -22,6 +22,7 @@ var (
 	initOnce sync.Once
 	adapter  *httpadapter.HandlerAdapter
 	db       *sql.DB
+	initCode string
 	initErr  error
 )
 
@@ -38,7 +39,7 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 			Headers: map[string]string{
 				"Content-Type": "application/json",
 			},
-			Body: `{"error":"api initialization failed"}`,
+			Body: `{"error":"api initialization failed","code":"` + initCode + `"}`,
 		}, nil
 	}
 
@@ -50,9 +51,15 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 func initAPI() {
 	cfg := config.Load()
 
+	initCode = "database_direct"
+	if os.Getenv("DATABASE_URL") == "" && os.Getenv("DATABASE_DSN") == "" {
+		initCode = "database_env_missing"
+	}
+
 	db, initErr = database.Open(cfg.DatabaseDSN)
 	if initErr != nil {
 		if fallbackDSN, ok := supabasePoolerDSN(cfg.DatabaseDSN); ok {
+			initCode = "database_pooler"
 			log.Printf("direct database connection failed; retrying with Supabase pooler")
 			db, initErr = database.Open(fallbackDSN)
 		}
@@ -61,6 +68,7 @@ func initAPI() {
 		return
 	}
 
+	initCode = ""
 	adapter = httpadapter.New(server.New(db, cfg).Routes())
 }
 

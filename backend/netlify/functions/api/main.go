@@ -124,20 +124,24 @@ func supabasePoolerDSNs(dsn string) []string {
 
 	sessionQuery := parsed.Query()
 	sessionQuery.Set("sslmode", "require")
-	sessionDSN := poolerDSN(parsed, projectRef, password, region, "5432", sessionQuery)
-
 	transactionQuery := parsed.Query()
 	transactionQuery.Set("sslmode", "require")
 	transactionQuery.Set("default_query_exec_mode", "simple_protocol")
-	transactionDSN := poolerDSN(parsed, projectRef, password, region, "6543", transactionQuery)
 
-	return []string{sessionDSN, transactionDSN}
+	var dsns []string
+	for _, cluster := range []string{"aws-0", "aws-1"} {
+		dsns = append(dsns,
+			poolerDSN(parsed, projectRef, password, cluster, region, "5432", sessionQuery),
+			poolerDSN(parsed, projectRef, password, cluster, region, "6543", transactionQuery),
+		)
+	}
+	return dsns
 }
 
-func poolerDSN(parsed *url.URL, projectRef, password, region, port string, query url.Values) string {
+func poolerDSN(parsed *url.URL, projectRef, password, cluster, region, port string, query url.Values) string {
 	next := *parsed
 	next.User = url.UserPassword(parsed.User.Username()+"."+projectRef, password)
-	next.Host = "aws-0-" + region + ".pooler.supabase.com:" + port
+	next.Host = cluster + "-" + region + ".pooler.supabase.com:" + port
 	next.RawQuery = query.Encode()
 	return next.String()
 }

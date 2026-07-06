@@ -1,0 +1,24 @@
+.env
+.env.*
+!.env.example
+!.env.local.example
+node_modules/
+.next/
+out/
+dist/
+coverage/
+artifacts/
+*.log
+*.tmp
+
+# Go
+bin/
+*.exe
+*.test
+vendor/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

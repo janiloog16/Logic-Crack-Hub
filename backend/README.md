@@ -115,7 +115,10 @@ Environment variables:
 DATABASE_URL=your Supabase PostgreSQL connection string
 JWT_SECRET=use a long random secret
 CORS_ALLOWED_ORIGINS=https://your-netlify-site.netlify.app
+SUPABASE_POOLER_REGION=your Supabase project region, for example ap-southeast-2
 ```
+
+For Netlify Functions, the Supabase pooler is recommended because direct database hosts can be IPv6-only. The Netlify function can retry a Supabase direct URL through the pooler when `SUPABASE_POOLER_REGION` is set.
 
 Production URLs:
 

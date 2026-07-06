@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -58,13 +59,18 @@ func initAPI() {
 
 	db, initErr = database.Open(cfg.DatabaseDSN)
 	if initErr != nil {
-		if fallbackDSN, ok := supabasePoolerDSN(cfg.DatabaseDSN); ok {
-			initCode = "database_pooler"
+		fallbackDSNs := supabasePoolerDSNs(cfg.DatabaseDSN)
+		for index, fallbackDSN := range fallbackDSNs {
+			initCode = "database_pooler_" + strconv.Itoa(index+1)
 			log.Printf("direct database connection failed; retrying with Supabase pooler")
 			db, initErr = database.Open(fallbackDSN)
+			if initErr == nil {
+				break
+			}
 		}
 	}
 	if initErr != nil {
+		initCode = initFailureCode(initCode, initErr)
 		return
 	}
 
@@ -91,15 +97,15 @@ func normalizePath(path string) string {
 	return "/api" + suffix
 }
 
-func supabasePoolerDSN(dsn string) (string, bool) {
+func supabasePoolerDSNs(dsn string) []string {
 	parsed, err := url.Parse(dsn)
 	if err != nil || parsed.User == nil {
-		return "", false
+		return nil
 	}
 
 	host := parsed.Hostname()
 	if !strings.HasPrefix(host, "db.") || !strings.HasSuffix(host, ".supabase.co") {
-		return "", false
+		return nil
 	}
 
 	projectRef := strings.TrimSuffix(strings.TrimPrefix(host, "db."), ".supabase.co")
@@ -108,21 +114,50 @@ func supabasePoolerDSN(dsn string) (string, bool) {
 		region = defaultPoolerRegion(projectRef)
 	}
 	if region == "" {
-		return "", false
+		return nil
 	}
 
 	password, ok := parsed.User.Password()
 	if !ok {
-		return "", false
+		return nil
 	}
 
-	query := parsed.Query()
-	query.Set("sslmode", "require")
+	sessionQuery := parsed.Query()
+	sessionQuery.Set("sslmode", "require")
+	sessionDSN := poolerDSN(parsed, projectRef, password, region, "5432", sessionQuery)
 
-	parsed.User = url.UserPassword(parsed.User.Username()+"."+projectRef, password)
-	parsed.Host = "aws-0-" + region + ".pooler.supabase.com:5432"
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), true
+	transactionQuery := parsed.Query()
+	transactionQuery.Set("sslmode", "require")
+	transactionQuery.Set("default_query_exec_mode", "simple_protocol")
+	transactionDSN := poolerDSN(parsed, projectRef, password, region, "6543", transactionQuery)
+
+	return []string{sessionDSN, transactionDSN}
+}
+
+func poolerDSN(parsed *url.URL, projectRef, password, region, port string, query url.Values) string {
+	next := *parsed
+	next.User = url.UserPassword(parsed.User.Username()+"."+projectRef, password)
+	next.Host = "aws-0-" + region + ".pooler.supabase.com:" + port
+	next.RawQuery = query.Encode()
+	return next.String()
+}
+
+func initFailureCode(stage string, err error) string {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "password authentication failed"):
+		return stage + "_auth"
+	case strings.Contains(message, "tenant or user not found"):
+		return stage + "_tenant"
+	case strings.Contains(message, "no such host"):
+		return stage + "_dns"
+	case strings.Contains(message, "no route to host"), strings.Contains(message, "network is unreachable"):
+		return stage + "_network"
+	case strings.Contains(message, "timeout"), strings.Contains(message, "deadline exceeded"):
+		return stage + "_timeout"
+	default:
+		return stage + "_failed"
+	}
 }
 
 func defaultPoolerRegion(projectRef string) string {

@@ -1,0 +1,20 @@
+[build]
+  base = "."
+  command = "npm --prefix frontend ci && npm --prefix frontend run build"
+  publish = "frontend/.next"
+
+[functions]
+  directory = "backend/netlify/functions"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/health"
+  to = "/.netlify/functions/api/health"
+  status = 200

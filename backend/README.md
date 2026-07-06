@@ -96,50 +96,34 @@ Web URL:
 http://localhost:3000
 ```
 
-## Deploy Backend On Render
+## Deploy On Netlify
 
-Create a new Render Web Service from the GitHub repo and set:
+The repo root contains `netlify.toml`, so Netlify builds the frontend and deploys the Go API as a Netlify Function from one site.
+
+Netlify build settings:
 
 ```text
-Root Directory: backend
-Runtime: Go
-Build Command: go build -o bin/api ./cmd/api
-Start Command: ./bin/api
-Health Check Path: /health
+Base directory: leave empty, or use .
+Build command: npm --prefix frontend ci && npm --prefix frontend run build
+Publish directory: frontend/.next
+Functions directory: backend/netlify/functions
 ```
 
 Environment variables:
 
 ```text
-PORT=8080
 DATABASE_URL=your Supabase PostgreSQL connection string
 JWT_SECRET=use a long random secret
 CORS_ALLOWED_ORIGINS=https://your-netlify-site.netlify.app
 ```
 
-After Render deploys, your API will be:
+Production URLs:
 
 ```text
-https://your-render-service.onrender.com
+https://your-netlify-site.netlify.app
+https://your-netlify-site.netlify.app/api
+https://your-netlify-site.netlify.app/health
 ```
-
-## Deploy Frontend On Netlify
-
-Create a new Netlify site from the same GitHub repo and set:
-
-```text
-Base directory: frontend
-Build command: npm run build
-Publish directory: .next
-```
-
-Environment variable:
-
-```text
-NEXT_PUBLIC_API_URL=https://your-render-service.onrender.com/api
-```
-
-After changing the Render URL in Netlify, redeploy the Netlify site.
 
 ## Important API Routes
 

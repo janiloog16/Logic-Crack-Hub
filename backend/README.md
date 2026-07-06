@@ -96,6 +96,51 @@ Web URL:
 http://localhost:3000
 ```
 
+## Deploy Backend On Render
+
+Create a new Render Web Service from the GitHub repo and set:
+
+```text
+Root Directory: backend
+Runtime: Go
+Build Command: go build -o bin/api ./cmd/api
+Start Command: ./bin/api
+Health Check Path: /health
+```
+
+Environment variables:
+
+```text
+PORT=8080
+DATABASE_URL=your Supabase PostgreSQL connection string
+JWT_SECRET=use a long random secret
+CORS_ALLOWED_ORIGINS=https://your-netlify-site.netlify.app
+```
+
+After Render deploys, your API will be:
+
+```text
+https://your-render-service.onrender.com
+```
+
+## Deploy Frontend On Netlify
+
+Create a new Netlify site from the same GitHub repo and set:
+
+```text
+Base directory: frontend
+Build command: npm run build
+Publish directory: .next
+```
+
+Environment variable:
+
+```text
+NEXT_PUBLIC_API_URL=https://your-render-service.onrender.com/api
+```
+
+After changing the Render URL in Netlify, redeploy the Netlify site.
+
 ## Important API Routes
 
 ```text

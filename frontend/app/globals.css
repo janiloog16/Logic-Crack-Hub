@@ -3,7 +3,15 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
+  --bg: #0b090a;
+  --surface: #171214;
+  --card: #211518;
+  --primary: #e53935;
+  --primary-hover: #ff5252;
+  --border-soft: rgba(255, 255, 255, 0.08);
+  --text-main: #ffffff;
+  --text-muted: #b6b6b6;
 }
 
 * {
@@ -12,9 +20,14 @@
 
 body {
   margin: 0;
-  background: #f4f4f4;
-  color: #222222;
-  font-family: Arial, Helvetica, sans-serif;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(229, 57, 53, 0.18), transparent 34rem),
+    radial-gradient(circle at 86% 18%, rgba(255, 82, 82, 0.1), transparent 28rem),
+    linear-gradient(180deg, #120b0d 0%, var(--bg) 34%, #070606 100%);
+  color: var(--text-main);
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0;
 }
 
 a {
@@ -30,9 +43,29 @@ textarea {
 }
 
 .panel {
-  border: 1px solid #dddddd;
-  background: #ffffff;
-  box-shadow: none;
+  border: 1px solid var(--border-soft);
+  background: linear-gradient(180deg, rgba(33, 21, 24, 0.94), rgba(23, 18, 20, 0.94));
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
+  color: var(--text-main);
+}
+
+.site-page {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 50% -10%, rgba(229, 57, 53, 0.13), transparent 38rem),
+    radial-gradient(circle at 0% 34%, rgba(229, 57, 53, 0.08), transparent 28rem),
+    linear-gradient(180deg, rgba(11, 9, 10, 0.58), var(--bg));
+  position: relative;
+  overflow-x: hidden;
+}
+
+.site-back-link {
+  color: var(--text-muted);
+}
+
+.site-back-link:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
 }
 
 .focus-ring {
@@ -45,7 +78,8 @@ textarea {
 }
 
 .directory-title {
-  font-family: Georgia, "Times New Roman", serif;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .no-scrollbar {
@@ -54,4 +88,211 @@ textarea {
 
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+.game-shell {
+  position: relative;
+}
+
+.game-shell::before {
+  content: "";
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(circle at center, transparent 0%, rgba(0, 0, 0, 0.5) 88%),
+    linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+  background-size: auto, 56px 56px;
+}
+
+.game-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.glass-nav {
+  border-bottom: 1px solid var(--border-soft);
+  background: rgba(11, 9, 10, 0.9);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
+.glass-panel {
+  border: 1px solid var(--border-soft);
+  background: rgba(23, 18, 20, 0.84);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.28);
+}
+
+.game-card {
+  border: 1px solid var(--border-soft);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
+    linear-gradient(180deg, rgba(33, 21, 24, 0.98), rgba(18, 13, 15, 0.98));
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.3);
+}
+
+.game-card-hover {
+  will-change: transform;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease;
+}
+
+.game-card-hover:hover {
+  border-color: rgba(229, 57, 53, 0.48);
+  transform: translate3d(0, -4px, 0);
+}
+
+.panel .text-ink,
+.panel .text-slate-800,
+.panel .text-slate-700 {
+  color: #ffffff;
+}
+
+.panel .text-slate-600,
+.panel .text-slate-500,
+.panel .text-slate-400 {
+  color: var(--text-muted);
+}
+
+.panel .border-slate-200,
+.panel .border-slate-300 {
+  border-color: var(--border-soft);
+}
+
+.panel .bg-white,
+.panel .bg-slate-50,
+.panel .bg-slate-100 {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.panel .bg-mist,
+.panel .bg-orange-50,
+.panel .bg-amber-100,
+.panel .bg-red-50 {
+  background: rgba(229, 57, 53, 0.12);
+}
+
+.panel input,
+.panel select,
+.panel textarea {
+  border-color: var(--border-soft);
+  background: #171214;
+  color: #ffffff;
+}
+
+.panel input::placeholder,
+.panel textarea::placeholder {
+  color: #797979;
+}
+
+.hero-bg {
+  background:
+    radial-gradient(circle at 18% 20%, rgba(255, 82, 82, 0.23), transparent 26rem),
+    radial-gradient(circle at 86% 0%, rgba(229, 57, 53, 0.2), transparent 30rem),
+    linear-gradient(135deg, rgba(33, 21, 24, 0.96), rgba(11, 9, 10, 0.9) 56%, rgba(229, 57, 53, 0.18));
+}
+
+.particle-field {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.particle-field::before,
+.particle-field::after {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.22) 1px, transparent 1px),
+    radial-gradient(circle, rgba(229, 57, 53, 0.18) 1px, transparent 1px);
+  background-position: 0 0, 18px 24px;
+  background-size: 72px 72px, 108px 108px;
+  opacity: 0.28;
+}
+
+.particle-field::after {
+  opacity: 0.12;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--primary), #a71317);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(229, 57, 53, 0.24);
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.btn-primary:hover {
+  box-shadow: 0 12px 28px rgba(255, 82, 82, 0.28);
+  transform: translate3d(0, -1px, 0);
+}
+
+.btn-secondary {
+  border: 1px solid var(--border-soft);
+  background: rgba(23, 18, 20, 0.78);
+  color: #ffffff;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.btn-secondary:hover {
+  border-color: rgba(229, 57, 53, 0.64);
+  background: rgba(33, 21, 24, 0.92);
+  transform: translate3d(0, -1px, 0);
+}
+
+.ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple::after {
+  content: "";
+  position: absolute;
+  inset: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  transform: translate(-50%, -50%);
+  opacity: 0;
+}
+
+.ripple:active::after {
+  width: 18rem;
+  height: 18rem;
+  opacity: 1;
+  transition:
+    width 260ms ease,
+    height 260ms ease,
+    opacity 360ms ease;
+}
+
+.shimmer {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.11), transparent);
+  animation: shimmer 1.35s infinite;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
 }

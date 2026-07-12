@@ -23,8 +23,10 @@ import (
 )
 
 type Server struct {
-	db  *sql.DB
-	cfg config.Config
+	db    *sql.DB
+	cfg   config.Config
+	email *emailService
+	otp   *otpService
 }
 
 type contextKey string
@@ -42,7 +44,12 @@ var dailyRewards = map[int]int{
 }
 
 func New(db *sql.DB, cfg config.Config) *Server {
-	return &Server{db: db, cfg: cfg}
+	return &Server{
+		db:    db,
+		cfg:   cfg,
+		email: newEmailService(cfg),
+		otp:   newOTPService(cfg.JWTSecret),
+	}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -63,6 +70,8 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/auth/register", s.register)
 		r.Post("/auth/login", s.login)
 		r.Post("/auth/forgot-password", s.forgotPassword)
+		r.Post("/auth/resend-email-verification", s.resendEmailVerification)
+		r.Post("/auth/verify-reset-code", s.verifyResetCode)
 		r.Post("/auth/reset-password", s.resetPassword)
 		r.Post("/auth/verify-email", s.verifyEmail)
 
@@ -123,30 +132,41 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if emailAlreadyRegistered(r.Context(), s.db, input.Email) {
+		httpx.Error(w, http.StatusConflict, "This email is already registered.")
+		return
+	}
+
 	hash, err := auth.HashPassword(input.Password)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "could not secure password")
 		return
 	}
 
-	var id int64
-	err = queryRowContext(s.db, r.Context(),
-		`INSERT INTO users (name, email, password_hash, role, credits) VALUES (?, ?, ?, 'user', 0) RETURNING id`,
-		input.Name, input.Email, hash,
-	).Scan(&id)
+	code, err := s.otp.GenerateCode()
 	if err != nil {
-		httpx.Error(w, http.StatusConflict, "email is already registered")
+		httpx.Error(w, http.StatusInternalServerError, "could not create verification code")
 		return
 	}
 
-	user := models.User{ID: id, Name: input.Name, Email: input.Email, Role: "user", Credits: 0, CreatedAt: time.Now()}
-	token, err := auth.GenerateToken(s.cfg.JWTSecret, user.ID, user.Role)
+	now := time.Now().UTC()
+	_, _ = execContext(s.db, r.Context(), `DELETE FROM pending_registrations WHERE email = ?`, input.Email)
+	_, err = execContext(s.db, r.Context(),
+		`INSERT INTO pending_registrations (name, email, password_hash, otp_hash, expires_at, resend_available_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		input.Name, input.Email, hash, s.otp.Hash(code), now.Add(otpExpiryMinutes*time.Minute), now.Add(otpResendSeconds*time.Second),
+	)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "could not create session")
+		httpx.Error(w, http.StatusInternalServerError, "could not start email verification")
 		return
 	}
 
-	httpx.JSON(w, http.StatusCreated, map[string]any{"token": token, "user": user})
+	if err := s.email.SendVerificationCode(r.Context(), input.Email, input.Name, code, "email_verification"); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not send verification email")
+		return
+	}
+
+	httpx.JSON(w, http.StatusCreated, map[string]string{"status": "verification code sent", "email": input.Email})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -192,10 +212,12 @@ func (s *Server) forgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	email := strings.ToLower(strings.TrimSpace(input.Email))
 	var userID int64
-	err := queryRowContext(s.db, r.Context(), `SELECT id FROM users WHERE email = ?`, strings.ToLower(strings.TrimSpace(input.Email))).Scan(&userID)
+	var name string
+	err := queryRowContext(s.db, r.Context(), `SELECT id, name FROM users WHERE email = ?`, email).Scan(&userID, &name)
 	if errors.Is(err, sql.ErrNoRows) {
-		httpx.JSON(w, http.StatusOK, map[string]string{"status": "if the account exists, reset instructions were created"})
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "if the account exists, a reset code was sent"})
 		return
 	}
 	if err != nil {
@@ -203,31 +225,164 @@ func (s *Server) forgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := randomToken()
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "could not create reset token")
+	var resendAvailableAt time.Time
+	err = queryRowContext(s.db, r.Context(), `SELECT resend_available_at FROM password_reset_otps WHERE user_id = ?`, userID).Scan(&resendAvailableAt)
+	if err == nil && time.Now().UTC().Before(resendAvailableAt) {
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "if the account exists, a reset code was sent"})
+		return
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		httpx.Error(w, http.StatusInternalServerError, "could not start password reset")
 		return
 	}
 
-	_, _ = execContext(s.db, r.Context(), `DELETE FROM password_reset_tokens WHERE user_id = ?`, userID)
+	code, err := s.otp.GenerateCode()
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not create reset code")
+		return
+	}
+
+	now := time.Now().UTC()
+	_, _ = execContext(s.db, r.Context(), `DELETE FROM password_reset_otps WHERE user_id = ?`, userID)
 	_, err = execContext(s.db, r.Context(),
-		`INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (?, ?, ?)`,
-		userID, token, time.Now().UTC().Add(30*time.Minute),
+		`INSERT INTO password_reset_otps (user_id, otp_hash, expires_at, resend_available_at) VALUES (?, ?, ?, ?)`,
+		userID, s.otp.Hash(code), now.Add(otpExpiryMinutes*time.Minute), now.Add(otpResendSeconds*time.Second),
 	)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "could not create reset token")
+		httpx.Error(w, http.StatusInternalServerError, "could not create reset code")
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, map[string]string{
-		"status":          "reset token created",
-		"dev_reset_token": token,
-	})
+	if err := s.email.SendVerificationCode(r.Context(), email, name, code, "password_reset"); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not send reset email")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "if the account exists, a reset code was sent"})
+}
+
+func (s *Server) resendEmailVerification(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := httpx.Decode(r, &input); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+	var pending struct {
+		ID                int64
+		Name              string
+		ResendAvailableAt time.Time
+	}
+	err := queryRowContext(s.db, r.Context(),
+		`SELECT id, name, resend_available_at FROM pending_registrations WHERE email = ?`,
+		email,
+	).Scan(&pending.ID, &pending.Name, &pending.ResendAvailableAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "if this email can be verified, a code was sent"})
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not resend verification code")
+		return
+	}
+	now := time.Now().UTC()
+	if now.Before(pending.ResendAvailableAt) {
+		httpx.Error(w, http.StatusTooManyRequests, "please wait before requesting another code")
+		return
+	}
+
+	code, err := s.otp.GenerateCode()
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not create verification code")
+		return
+	}
+	_, err = execContext(s.db, r.Context(),
+		`UPDATE pending_registrations
+		 SET otp_hash = ?, attempts = 0, expires_at = ?, resend_available_at = ?, updated_at = ?
+		 WHERE id = ?`,
+		s.otp.Hash(code), now.Add(otpExpiryMinutes*time.Minute), now.Add(otpResendSeconds*time.Second), now, pending.ID,
+	)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not resend verification code")
+		return
+	}
+	if err := s.email.SendVerificationCode(r.Context(), email, pending.Name, code, "email_verification"); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not send verification email")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "verification code sent"})
+}
+
+func (s *Server) verifyResetCode(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Email string `json:"email"`
+		OTP   string `json:"otp"`
+	}
+	if err := httpx.Decode(r, &input); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+	var reset struct {
+		ID        int64
+		OTPHash   string
+		Attempts  int
+		ExpiresAt time.Time
+	}
+	err := queryRowContext(s.db, r.Context(),
+		`SELECT pro.id, pro.otp_hash, pro.attempts, pro.expires_at
+		 FROM password_reset_otps pro
+		 JOIN users u ON u.id = pro.user_id
+		 WHERE u.email = ?`,
+		email,
+	).Scan(&reset.ID, &reset.OTPHash, &reset.Attempts, &reset.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpx.Error(w, http.StatusBadRequest, "reset code is invalid or expired")
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not verify reset code")
+		return
+	}
+	if reset.Attempts >= maxOTPAttempts || time.Now().UTC().After(reset.ExpiresAt) {
+		httpx.Error(w, http.StatusBadRequest, "reset code is invalid or expired")
+		return
+	}
+	if !s.otp.Matches(reset.OTPHash, strings.TrimSpace(input.OTP)) {
+		_, _ = execContext(s.db, r.Context(), `UPDATE password_reset_otps SET attempts = attempts + 1, updated_at = ? WHERE id = ?`, time.Now().UTC(), reset.ID)
+		httpx.Error(w, http.StatusBadRequest, "reset code is invalid or expired")
+		return
+	}
+
+	resetToken, err := randomToken()
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not create reset token")
+		return
+	}
+	now := time.Now().UTC()
+	_, err = execContext(s.db, r.Context(),
+		`UPDATE password_reset_otps
+		 SET verified = TRUE, reset_token_hash = ?, reset_token_expires_at = ?, updated_at = ?
+		 WHERE id = ?`,
+		s.otp.Hash(resetToken), now.Add(resetTokenValidity*time.Minute), now, reset.ID,
+	)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not verify reset code")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "reset code verified", "reset_token": resetToken})
 }
 
 func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Token       string `json:"token"`
+		ResetToken  string `json:"reset_token"`
 		NewPassword string `json:"new_password"`
 	}
 	if err := httpx.Decode(r, &input); err != nil {
@@ -239,10 +394,15 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resetToken := strings.TrimSpace(input.ResetToken)
+	if resetToken == "" {
+		resetToken = strings.TrimSpace(input.Token)
+	}
 	var userID int64
 	err := queryRowContext(s.db, r.Context(),
-		`SELECT user_id FROM password_reset_tokens WHERE token = ? AND expires_at > ?`,
-		strings.TrimSpace(input.Token), time.Now().UTC(),
+		`SELECT user_id FROM password_reset_otps
+		 WHERE reset_token_hash = ? AND verified = TRUE AND reset_token_expires_at > ?`,
+		s.otp.Hash(resetToken), time.Now().UTC(),
 	).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		httpx.Error(w, http.StatusBadRequest, "reset token is invalid or expired")
@@ -270,7 +430,7 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "could not update password")
 		return
 	}
-	if _, err := execContext(tx, r.Context(), `DELETE FROM password_reset_tokens WHERE user_id = ?`, userID); err != nil {
+	if _, err := execContext(tx, r.Context(), `DELETE FROM password_reset_otps WHERE user_id = ?`, userID); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "could not finalize password reset")
 		return
 	}
@@ -284,30 +444,35 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createEmailVerification(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
-	token, err := randomToken()
+	code, err := s.otp.GenerateCode()
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "could not create verification token")
+		httpx.Error(w, http.StatusInternalServerError, "could not create verification code")
 		return
 	}
 
+	now := time.Now().UTC()
 	_, _ = execContext(s.db, r.Context(), `DELETE FROM email_verification_tokens WHERE user_id = ?`, user.ID)
 	_, err = execContext(s.db, r.Context(),
 		`INSERT INTO email_verification_tokens (user_id, token, expires_at) VALUES (?, ?, ?)`,
-		user.ID, token, time.Now().UTC().Add(24*time.Hour),
+		user.ID, s.otp.Hash(code), now.Add(otpExpiryMinutes*time.Minute),
 	)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "could not create verification token")
+		httpx.Error(w, http.StatusInternalServerError, "could not create verification code")
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, map[string]string{
-		"status":                 "verification token created",
-		"dev_verification_token": token,
-	})
+	if err := s.email.SendVerificationCode(r.Context(), user.Email, user.Name, code, "email_verification"); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not send verification email")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "verification code sent"})
 }
 
 func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	var input struct {
+		Email string `json:"email"`
+		OTP   string `json:"otp"`
 		Token string `json:"token"`
 	}
 	if err := httpx.Decode(r, &input); err != nil {
@@ -315,17 +480,41 @@ func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userID int64
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+	code := strings.TrimSpace(input.OTP)
+	if code == "" {
+		code = strings.TrimSpace(input.Token)
+	}
+
+	var pending struct {
+		ID           int64
+		Name         string
+		Email        string
+		PasswordHash string
+		OTPHash      string
+		Attempts     int
+		ExpiresAt    time.Time
+	}
 	err := queryRowContext(s.db, r.Context(),
-		`SELECT user_id FROM email_verification_tokens WHERE token = ? AND expires_at > ?`,
-		strings.TrimSpace(input.Token), time.Now().UTC(),
-	).Scan(&userID)
+		`SELECT id, name, email, password_hash, otp_hash, attempts, expires_at
+		 FROM pending_registrations WHERE email = ?`,
+		email,
+	).Scan(&pending.ID, &pending.Name, &pending.Email, &pending.PasswordHash, &pending.OTPHash, &pending.Attempts, &pending.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		httpx.Error(w, http.StatusBadRequest, "verification token is invalid or expired")
+		httpx.Error(w, http.StatusBadRequest, "verification code is invalid or expired")
 		return
 	}
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "could not verify email")
+		return
+	}
+	if pending.Attempts >= maxOTPAttempts || time.Now().UTC().After(pending.ExpiresAt) {
+		httpx.Error(w, http.StatusBadRequest, "verification code is invalid or expired")
+		return
+	}
+	if !s.otp.Matches(pending.OTPHash, code) {
+		_, _ = execContext(s.db, r.Context(), `UPDATE pending_registrations SET attempts = attempts + 1, updated_at = ? WHERE id = ?`, time.Now().UTC(), pending.ID)
+		httpx.Error(w, http.StatusBadRequest, "verification code is invalid or expired")
 		return
 	}
 
@@ -336,11 +525,19 @@ func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	if _, err := execContext(tx, r.Context(), `UPDATE users SET email_verified_at = ? WHERE id = ?`, time.Now().UTC(), userID); err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "could not update email status")
+	now := time.Now().UTC()
+	var user models.User
+	err = queryRowContext(tx, r.Context(),
+		`INSERT INTO users (name, email, password_hash, role, credits, email_verified_at)
+		 VALUES (?, ?, ?, 'user', 0, ?)
+		 RETURNING id, name, email, role, credits, created_at`,
+		pending.Name, pending.Email, pending.PasswordHash, now,
+	).Scan(&user.ID, &user.Name, &user.Email, &user.Role, &user.Credits, &user.CreatedAt)
+	if err != nil {
+		httpx.Error(w, http.StatusConflict, "email is already registered")
 		return
 	}
-	if _, err := execContext(tx, r.Context(), `DELETE FROM email_verification_tokens WHERE user_id = ?`, userID); err != nil {
+	if _, err := execContext(tx, r.Context(), `DELETE FROM pending_registrations WHERE id = ?`, pending.ID); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "could not finalize verification")
 		return
 	}
@@ -349,7 +546,13 @@ func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "email verified"})
+	token, err := auth.GenerateToken(s.cfg.JWTSecret, user.ID, user.Role)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not create session")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]any{"token": token, "user": user})
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
@@ -1367,6 +1570,12 @@ func pathID(w http.ResponseWriter, r *http.Request, key string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+func emailAlreadyRegistered(ctx context.Context, db sqlRunner, email string) bool {
+	var exists bool
+	err := queryRowContext(db, ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE email = ?)`, email).Scan(&exists)
+	return err == nil && exists
 }
 
 func slugify(value string) string {

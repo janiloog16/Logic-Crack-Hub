@@ -1,9 +1,10 @@
 INSERT INTO users (id, name, email, password_hash, role, credits)
 VALUES
-  (1, 'Logic Crack Admin', 'admin@logiccrack.studio', '$2a$10$eT.yfNt.wyurAbfU6wt/NOxviDhknniElTv1ntArw/Hj5LuQL6hkK', 'admin', 500),
+  (1, 'Logic Crack Admin', 'logiccrack', '$2a$10$khN2sJR2b3S.GoZ2D1EncOUCR1fNiW60U35SMUXR51smKp2Qx9Tb.', 'admin', 500),
   (2, 'Unity Builder', 'builder@example.com', '$2a$10$eT.yfNt.wyurAbfU6wt/NOxviDhknniElTv1ntArw/Hj5LuQL6hkK', 'user', 120)
 ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name,
+  email = EXCLUDED.email,
   password_hash = EXCLUDED.password_hash,
   role = EXCLUDED.role,
   credits = EXCLUDED.credits;

@@ -55,7 +55,7 @@ database/
 Seed login:
 
 ```text
-Admin: admin@logiccrack.studio / password123
+Admin: logiccrack / 1234123
 User:  builder@example.com / password123
 ```
 
@@ -68,6 +68,8 @@ go run .\cmd\api
 ```
 
 For Supabase, set `DATABASE_URL` in `.env` to your project connection string with `sslmode=require`.
+
+If the database already exists, run `database/email_auth_migration.sql` once in Supabase SQL Editor to add email verification and password reset OTP tables.
 
 API URL:
 
@@ -114,6 +116,9 @@ Environment variables:
 ```text
 DATABASE_URL=your Supabase PostgreSQL connection string
 JWT_SECRET=use a long random secret
+BREVO_API_KEY=your Brevo transactional email API key
+BREVO_SENDER_NAME=Logic Crack Hub
+BREVO_SENDER_EMAIL=your verified Brevo sender email
 CORS_ALLOWED_ORIGINS=https://your-netlify-site.netlify.app
 SUPABASE_POOLER_REGION=your Supabase project region, for example ap-southeast-2
 ```
@@ -134,7 +139,9 @@ https://your-netlify-site.netlify.app/health
 POST /api/auth/register
 POST /api/auth/login
 POST /api/auth/forgot-password
+POST /api/auth/verify-reset-code
 POST /api/auth/reset-password
+POST /api/auth/resend-email-verification
 POST /api/auth/email-verification
 POST /api/auth/verify-email
 

@@ -11,6 +11,9 @@ type Config struct {
 	Port               string
 	DatabaseDSN        string
 	JWTSecret          string
+	BrevoAPIKey        string
+	BrevoSenderName    string
+	BrevoSenderEmail   string
 	CORSAllowedOrigins []string
 }
 
@@ -21,6 +24,9 @@ func Load() Config {
 		Port:               value("PORT", "8080"),
 		DatabaseDSN:        databaseURL(),
 		JWTSecret:          value("JWT_SECRET", "change-this-dev-secret"),
+		BrevoAPIKey:        value("BREVO_API_KEY", ""),
+		BrevoSenderName:    value("BREVO_SENDER_NAME", "Logic Crack Hub"),
+		BrevoSenderEmail:   value("BREVO_SENDER_EMAIL", ""),
 		CORSAllowedOrigins: split(value("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")),
 	}
 }

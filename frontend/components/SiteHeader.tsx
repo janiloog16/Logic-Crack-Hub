@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { LayoutDashboard, LogIn, LogOut, Package, Search, ShieldCheck, UserPlus } from "lucide-react";
+import { LayoutDashboard, LogIn, LogOut, Menu, Package, Search, ShieldCheck, UserPlus, X } from "lucide-react";
+import { useState } from "react";
 import type { User } from "@/lib/types";
 
 type SiteHeaderProps = {
@@ -11,41 +12,64 @@ type SiteHeaderProps = {
 
 export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
   const isAdmin = user?.role === "admin";
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  function closeMobileMenu() {
+    setMobileMenuOpen(false);
+  }
+
+  function logout() {
+    closeMobileMenu();
+    onLogout?.();
+  }
+
+  const navItems = [
+    { label: "Assets", href: "/#assets" },
+    { label: "Categories", href: "/#assets" },
+    { label: "Popular", href: "/#assets" },
+    { label: "Latest", href: "/#assets" },
+    { label: "Forum", href: "/#requests" },
+  ];
 
   return (
-    <header className="sticky top-0 z-30 border-b border-black bg-white">
+    <header className="glass-nav sticky top-0 z-30 text-white">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-3 py-3 sm:px-6 sm:py-4">
-        <Link href="/" className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center bg-ink text-white sm:h-11 sm:w-11">
+        <Link href="/" className="flex min-w-0 items-center gap-2 sm:gap-3" onClick={closeMobileMenu}>
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#ff5252] to-[#8f1014] text-white shadow-[0_12px_34px_rgba(229,57,53,0.32)] sm:h-11 sm:w-11">
             <Package size={18} aria-hidden />
           </span>
           <span className="min-w-0">
-            <span className="block truncate text-base font-black uppercase tracking-wide text-ink sm:text-xl">Logic Crack Hub</span>
-            <span className="hidden truncate text-xs font-bold uppercase tracking-wide text-slate-500 sm:block">Unity assets and tutorials</span>
+            <span className="block truncate text-base font-black uppercase text-white sm:text-xl">Logic Crack Hub</span>
+            <span className="hidden truncate text-xs font-bold uppercase text-[#b6b6b6] sm:block">Premium Unity assets</span>
           </span>
         </Link>
 
-        <nav className="hidden items-center gap-1 md:flex">
-          <Link className="px-3 py-2 text-sm font-bold uppercase text-slate-800 hover:bg-slate-100" href="/">
-            Assets
-          </Link>
+        <nav className="hidden items-center rounded-full border border-white/10 bg-white/[0.03] p-1 md:flex">
+          {navItems.map((item) => (
+            <Link className="rounded-full px-3 py-2 text-sm font-bold text-[#d7d7d7] transition hover:bg-white/10 hover:text-white" href={item.href} key={item.label}>
+              {item.label}
+            </Link>
+          ))}
           {isAdmin ? (
-            <Link className="px-3 py-2 text-sm font-bold uppercase text-slate-800 hover:bg-slate-100" href="/admin">
+            <Link className="rounded-full px-3 py-2 text-sm font-bold text-[#d7d7d7] transition hover:bg-white/10 hover:text-white" href="/admin">
               Admin
             </Link>
           ) : null}
         </nav>
 
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="hidden shrink-0 items-center gap-2 md:flex">
+          <Link className="focus-ring btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full" href="/#assets" aria-label="Search assets">
+            <Search size={17} aria-hidden />
+          </Link>
           {user ? (
             <>
-              <span className="hidden items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 sm:flex">
+              <span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-[#ededed] sm:flex">
                 <ShieldCheck size={16} aria-hidden />
                 {user.credits} credits
               </span>
               <button
-                className="focus-ring inline-flex items-center gap-2 bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-200"
-                onClick={onLogout}
+                className="focus-ring btn-secondary inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold"
+                onClick={logout}
                 type="button"
               >
                 <LogOut size={16} aria-hidden />
@@ -55,14 +79,14 @@ export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
           ) : (
             <>
               <Link
-                className="focus-ring inline-flex items-center gap-2 bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-200"
+                className="focus-ring btn-secondary inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold"
                 href="/login"
               >
                 <LogIn size={16} aria-hidden />
                 Login
               </Link>
               <Link
-                className="focus-ring hidden items-center gap-2 bg-ink px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 sm:inline-flex"
+                className="focus-ring btn-primary ripple hidden items-center gap-2 rounded-full px-4 py-2 text-sm font-bold sm:inline-flex"
                 href="/register"
               >
                 <UserPlus size={16} aria-hidden />
@@ -72,27 +96,75 @@ export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
           )}
           {isAdmin ? (
             <Link
-              className="focus-ring inline-flex items-center gap-2 border border-slate-300 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100"
+              className="focus-ring btn-secondary inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold"
               href="/admin"
             >
               <LayoutDashboard size={16} aria-hidden />
               <span className="hidden lg:inline">Dashboard</span>
             </Link>
           ) : null}
-          <Link className="focus-ring hidden border border-slate-300 p-2 text-slate-700 hover:bg-slate-100 sm:inline-flex" href="/">
-            <Search size={17} aria-hidden />
-          </Link>
         </div>
+
+        <button
+          aria-controls="mobile-site-menu"
+          aria-expanded={mobileMenuOpen}
+          aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+          className="focus-ring inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/10 text-white md:hidden"
+          onClick={() => setMobileMenuOpen((current) => !current)}
+          type="button"
+        >
+          {mobileMenuOpen ? <X size={21} aria-hidden /> : <Menu size={21} aria-hidden />}
+        </button>
       </div>
-      <div className="bg-[#111111] text-white">
-        <div className="no-scrollbar mx-auto flex max-w-6xl gap-1 overflow-x-auto px-3 sm:px-6">
-          {["Controllers", "AI", "UI", "Inventory", "Dialogue", "Save System", "VFX", "Templates"].map((item) => (
-            <a className="whitespace-nowrap px-2.5 py-3 text-[11px] font-black uppercase tracking-wide hover:bg-slate-700 sm:px-3 sm:text-xs" href="/#assets" key={item}>
-              {item}
-            </a>
-          ))}
+
+      {mobileMenuOpen ? (
+        <div className="border-t border-white/10 bg-[#0b090a]/95 backdrop-blur-xl md:hidden" id="mobile-site-menu">
+            <div className="mx-auto grid max-w-6xl gap-4 px-3 py-4">
+            <nav className="grid gap-2">
+              {navItems.map((item) => (
+                <Link className="focus-ring rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm font-black uppercase text-white" href={item.href} key={item.label} onClick={closeMobileMenu}>
+                  {item.label}
+                </Link>
+              ))}
+              {isAdmin ? (
+                <Link className="focus-ring rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm font-black uppercase text-white" href="/admin" onClick={closeMobileMenu}>
+                  Admin dashboard
+                </Link>
+              ) : null}
+            </nav>
+
+            <div className="grid gap-2 border-t border-white/10 pt-4">
+              {user ? (
+                <>
+                  <span className="inline-flex items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-3 text-sm font-bold text-slate-100">
+                    <ShieldCheck size={16} aria-hidden />
+                    {user.credits} credits available
+                  </span>
+                  <button
+                    className="focus-ring btn-secondary inline-flex items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-black"
+                    onClick={logout}
+                    type="button"
+                  >
+                    <LogOut size={16} aria-hidden />
+                    Logout
+                  </button>
+                </>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <Link className="focus-ring btn-secondary inline-flex items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-black" href="/login" onClick={closeMobileMenu}>
+                    <LogIn size={16} aria-hidden />
+                    Login
+                  </Link>
+                  <Link className="focus-ring btn-primary ripple inline-flex items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-black" href="/register" onClick={closeMobileMenu}>
+                    <UserPlus size={16} aria-hidden />
+                    Register
+                  </Link>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
+      ) : null}
     </header>
   );
 }

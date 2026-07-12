@@ -4,17 +4,21 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { LogIn, Package } from "lucide-react";
+import { ButtonLoading, FeedbackMessage } from "@/components/LoadingFeedback";
 import { apiFetch, AuthResponse, saveSession } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("admin@logiccrack.studio");
-  const [password, setPassword] = useState("password123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (loading) {
+      return;
+    }
     setError("");
     setLoading(true);
     try {
@@ -32,58 +36,68 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4 py-10">
-      <section className="panel w-full max-w-md rounded-lg p-6">
+    <main className="site-page game-shell flex items-center justify-center px-4 py-10">
+      <section className="glass-panel w-full max-w-md rounded-3xl p-6">
         <Link className="inline-flex items-center gap-3" href="/">
-          <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-ink text-white">
+          <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-[#ff5252] to-[#8f1014] text-white shadow-[0_12px_34px_rgba(229,57,53,0.32)]">
             <Package size={20} aria-hidden />
           </span>
           <span>
-            <span className="block text-base font-bold text-ink">Logic Crack Hub</span>
-            <span className="block text-xs font-medium text-slate-500">Welcome back</span>
+            <span className="block text-base font-black text-white">Logic Crack Hub</span>
+            <span className="block text-xs font-medium text-[#b6b6b6]">Welcome back</span>
           </span>
         </Link>
 
-        <h1 className="mt-8 text-2xl font-black text-ink">Login</h1>
-        <p className="mt-2 text-sm leading-6 text-slate-600">
-          Seed admin credentials are prefilled for local development.
-        </p>
+        <h1 className="mt-8 text-3xl font-black text-white">Login</h1>
+        <p className="mt-2 text-sm leading-6 text-[#b6b6b6]">Enter your account details to continue.</p>
 
         <form className="mt-6 space-y-4" onSubmit={submit}>
-          <label className="block">
-            <span className="text-sm font-bold text-slate-700">Email</span>
-            <input
-              className="focus-ring mt-2 w-full rounded-md border border-slate-300 px-3 py-3 text-sm"
-              onChange={(event) => setEmail(event.target.value)}
-              type="email"
-              value={email}
-            />
-          </label>
-          <label className="block">
-            <span className="text-sm font-bold text-slate-700">Password</span>
-            <input
-              className="focus-ring mt-2 w-full rounded-md border border-slate-300 px-3 py-3 text-sm"
-              onChange={(event) => setPassword(event.target.value)}
-              type="password"
-              value={password}
-            />
-          </label>
+          <fieldset className="space-y-4 disabled:opacity-70" disabled={loading}>
+            <label className="block">
+              <span className="text-sm font-bold text-[#d8d8d8]">Email or username</span>
+              <input
+                className="focus-ring mt-2 w-full rounded-2xl border border-white/10 bg-[#171214] px-3 py-3 text-sm text-white"
+                onChange={(event) => setEmail(event.target.value)}
+                autoComplete="username"
+                type="text"
+                value={email}
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm font-bold text-[#d8d8d8]">Password</span>
+              <input
+                className="focus-ring mt-2 w-full rounded-2xl border border-white/10 bg-[#171214] px-3 py-3 text-sm text-white"
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                type="password"
+                value={password}
+              />
+            </label>
+          </fieldset>
 
-          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p> : null}
+          {error ? <FeedbackMessage tone="error">{error}</FeedbackMessage> : null}
 
           <button
-            className="focus-ring inline-flex w-full items-center justify-center gap-2 rounded-md bg-reef px-4 py-3 text-sm font-bold text-white hover:bg-orange-700 disabled:bg-slate-300"
+            className="focus-ring btn-primary ripple inline-flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-black disabled:opacity-50"
             disabled={loading}
             type="submit"
           >
-            <LogIn size={16} aria-hidden />
-            {loading ? "Logging in..." : "Login"}
+            <ButtonLoading isLoading={loading} loadingText="Logging in...">
+              <LogIn size={16} aria-hidden />
+              Login
+            </ButtonLoading>
           </button>
         </form>
 
-        <p className="mt-5 text-center text-sm text-slate-600">
+        <p className="mt-5 text-center text-sm text-[#b6b6b6]">
+          <Link className="font-bold text-[#ff5252]" href="/forgot-password">
+            Forgot password?
+          </Link>
+        </p>
+
+        <p className="mt-3 text-center text-sm text-[#b6b6b6]">
           Need an account?{" "}
-          <Link className="font-bold text-reef" href="/register">
+          <Link className="font-bold text-[#ff5252]" href="/register">
             Register
           </Link>
         </p>
@@ -91,4 +105,3 @@ export default function LoginPage() {
     </main>
   );
 }
-

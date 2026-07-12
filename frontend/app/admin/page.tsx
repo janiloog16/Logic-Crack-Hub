@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { ArrowLeft, Bell, BarChart3, PackagePlus, ShieldAlert, Upload } from "lucide-react";
+import { ButtonLoading, FeedbackMessage } from "@/components/LoadingFeedback";
 import { SiteHeader } from "@/components/SiteHeader";
 import {
   apiFetch,
@@ -69,6 +70,13 @@ export default function AdminPage() {
   const [editingNotificationId, setEditingNotificationId] = useState<number | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [message, setMessage] = useState("");
+  const [savingAsset, setSavingAsset] = useState(false);
+  const [deletingAssetId, setDeletingAssetId] = useState<number | null>(null);
+  const [pendingDeleteAssetId, setPendingDeleteAssetId] = useState<number | null>(null);
+  const [savingNotification, setSavingNotification] = useState(false);
+  const [deletingNotificationId, setDeletingNotificationId] = useState<number | null>(null);
+  const [pendingDeleteNotificationId, setPendingDeleteNotificationId] = useState<number | null>(null);
+  const [loadingPanel, setLoadingPanel] = useState<"users" | "requests" | "assets" | null>(null);
 
   useEffect(() => {
     const saved = readSavedUser();
@@ -105,12 +113,16 @@ export default function AdminPage() {
 
   async function createAsset(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (savingAsset) {
+      return;
+    }
     setMessage("");
+    setSavingAsset(true);
     try {
       const payload = {
         ...form,
         gallery_urls: splitList(form.gallery_urls),
-        features: splitList(form.features),
+        features: paragraphList(form.features),
         tags: splitList(form.tags),
       };
       await apiFetch(editingAssetId ? `/admin/assets/${editingAssetId}` : "/admin/assets", {
@@ -120,9 +132,12 @@ export default function AdminPage() {
       await reloadAssets();
       setForm(initialForm);
       setEditingAssetId(null);
+      setPendingDeleteAssetId(null);
       setMessage(editingAssetId ? "Asset updated." : "Asset published.");
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Could not save asset.");
+    } finally {
+      setSavingAsset(false);
     }
   }
 
@@ -144,7 +159,7 @@ export default function AdminPage() {
       download_url: asset.download_url ?? "",
       gallery_urls: asset.gallery_urls.join(", "),
       description: asset.description,
-      features: asset.features.join(", "),
+      features: asset.features.join("\n\n"),
       unity_version: asset.unity_version,
       file_size: asset.file_size,
       category_id: asset.category.id,
@@ -163,27 +178,39 @@ export default function AdminPage() {
   }
 
   async function deleteAsset(asset: Asset) {
-    const confirmed = window.confirm(`Delete "${asset.title}"? This cannot be undone.`);
-    if (!confirmed) {
+    if (deletingAssetId) {
+      return;
+    }
+    if (pendingDeleteAssetId !== asset.id) {
+      setPendingDeleteAssetId(asset.id);
+      setMessage(`Click Delete again to remove "${asset.title}".`);
       return;
     }
 
     setMessage("");
+    setDeletingAssetId(asset.id);
     try {
       await apiFetch(`/admin/assets/${asset.id}`, { method: "DELETE" });
       if (editingAssetId === asset.id) {
         cancelEdit();
       }
       await reloadAssets();
+      setPendingDeleteAssetId(null);
       setMessage("Asset deleted.");
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Could not delete asset.");
+    } finally {
+      setDeletingAssetId(null);
     }
   }
 
   async function createNotification(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (savingNotification) {
+      return;
+    }
     setMessage("");
+    setSavingNotification(true);
     try {
       await apiFetch(editingNotificationId ? `/admin/notifications/${editingNotificationId}` : "/admin/notifications", {
         method: editingNotificationId ? "PUT" : "POST",
@@ -199,6 +226,8 @@ export default function AdminPage() {
       setMessage(editingNotificationId ? "Notification updated." : "Notification sent.");
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Could not save notification.");
+    } finally {
+      setSavingNotification(false);
     }
   }
 
@@ -223,26 +252,38 @@ export default function AdminPage() {
   }
 
   async function deleteNotification(notification: Notification) {
-    const confirmed = window.confirm(`Delete notification "${notification.title}"?`);
-    if (!confirmed) {
+    if (deletingNotificationId) {
+      return;
+    }
+    if (pendingDeleteNotificationId !== notification.id) {
+      setPendingDeleteNotificationId(notification.id);
+      setMessage(`Click Delete again to remove notification "${notification.title}".`);
       return;
     }
 
+    setDeletingNotificationId(notification.id);
     try {
       await apiFetch(`/admin/notifications/${notification.id}`, { method: "DELETE" });
       if (editingNotificationId === notification.id) {
         resetNotificationForm();
       }
       await reloadNotifications();
+      setPendingDeleteNotificationId(null);
       setMessage("Notification deleted.");
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Could not delete notification.");
+    } finally {
+      setDeletingNotificationId(null);
     }
   }
 
   async function openPanel(panel: "users" | "requests" | "assets") {
+    if (loadingPanel === panel) {
+      return;
+    }
     setActivePanel(panel);
     setMessage("");
+    setLoadingPanel(panel);
     try {
       if (panel === "users") {
         const response = await apiFetch<{ users: User[] }>("/admin/users");
@@ -259,16 +300,18 @@ export default function AdminPage() {
       }
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Could not load details.");
+    } finally {
+      setLoadingPanel(null);
     }
   }
 
   const isAdmin = user?.role === "admin";
 
   return (
-    <main>
+    <main className="site-page game-shell">
       <SiteHeader user={user} onLogout={logout} />
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <Link className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-bold text-slate-600 hover:bg-slate-100" href="/">
+        <Link className="site-back-link inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-bold" href="/">
           <ArrowLeft size={16} aria-hidden />
           Back to catalog
         </Link>
@@ -291,7 +334,7 @@ export default function AdminPage() {
               {!isAdmin ? (
                 <div className="mt-4 flex items-start gap-3 rounded-md bg-amber-100 p-3 text-sm font-semibold text-amber-900">
                   <ShieldAlert className="mt-0.5 shrink-0" size={18} aria-hidden />
-                  Login with the seeded admin account to unlock writes: admin@logiccrack.studio / password123
+                  Login with the seeded admin account to unlock writes.
                 </div>
               ) : null}
             </section>
@@ -307,14 +350,18 @@ export default function AdminPage() {
               ].map(([label, value, panel]) => (
                 <button
                   className={`panel rounded-lg p-4 text-left ${panel ? "cursor-pointer hover:border-orange-300 hover:bg-orange-50" : "cursor-default"}`}
-                  disabled={!panel || !isAdmin}
+                  disabled={!panel || !isAdmin || loadingPanel === panel}
                   key={label}
                   onClick={() => panel && openPanel(panel as "users" | "requests" | "assets")}
                   type="button"
                 >
                   <p className="text-sm font-bold text-slate-500">{label}</p>
                   <p className="mt-2 text-3xl font-black text-ink">{value}</p>
-                  {panel ? <p className="mt-1 text-xs font-bold uppercase text-reef">Click to view</p> : null}
+                  {panel ? (
+                    <p className="mt-1 text-xs font-bold uppercase text-reef">
+                      {loadingPanel === panel ? "Loading..." : "Click to view"}
+                    </p>
+                  ) : null}
                 </button>
               ))}
             </section>
@@ -401,7 +448,8 @@ export default function AdminPage() {
               </div>
 
               <form className="mt-5 grid gap-4" onSubmit={createAsset}>
-                <div className="grid gap-4 md:grid-cols-2">
+                <fieldset className="grid gap-4 disabled:opacity-70" disabled={savingAsset}>
+                  <div className="grid gap-4 md:grid-cols-2">
                   <Field label="Title" value={form.title} onChange={(value) => updateForm("title", value)} />
                   <Field label="Slug" value={form.slug} onChange={(value) => updateForm("slug", value)} placeholder="auto-generated if empty" />
                   <Field label="Thumbnail URL" value={form.thumbnail_url} onChange={(value) => updateForm("thumbnail_url", value)} />
@@ -433,21 +481,29 @@ export default function AdminPage() {
                       value={form.credit_cost}
                     />
                   </label>
-                </div>
+                  </div>
 
-                <TextArea label="Description" value={form.description} onChange={(value) => updateForm("description", value)} />
-                <TextArea label="Features" value={form.features} onChange={(value) => updateForm("features", value)} placeholder="comma separated" />
-                <TextArea label="Tags" value={form.tags} onChange={(value) => updateForm("tags", value)} placeholder="comma separated" />
-                <TextArea label="Changelog" value={form.changelog} onChange={(value) => updateForm("changelog", value)} />
+                  <TextArea label="Description" value={form.description} onChange={(value) => updateForm("description", value)} />
+                  <TextArea
+                    label="Features"
+                    value={form.features}
+                    onChange={(value) => updateForm("features", value)}
+                    placeholder="Paste or write feature paragraphs"
+                  />
+                  <TextArea label="Tags" value={form.tags} onChange={(value) => updateForm("tags", value)} placeholder="comma separated" />
+                  <TextArea label="Changelog" value={form.changelog} onChange={(value) => updateForm("changelog", value)} />
+                </fieldset>
 
                 <div className="flex flex-col gap-3 sm:flex-row">
                   <button
                     className="focus-ring inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-reef px-4 py-3 text-sm font-bold text-white hover:bg-orange-700 disabled:bg-slate-300"
-                    disabled={!isAdmin}
+                    disabled={!isAdmin || savingAsset}
                     type="submit"
                   >
-                    <Upload size={16} aria-hidden />
-                    {editingAssetId ? "Update asset" : "Publish asset"}
+                    <ButtonLoading isLoading={savingAsset} loadingText={editingAssetId ? "Saving..." : "Uploading..."}>
+                      <Upload size={16} aria-hidden />
+                      {editingAssetId ? "Update asset" : "Publish asset"}
+                    </ButtonLoading>
                   </button>
                   {editingAssetId ? (
                     <button
@@ -484,7 +540,7 @@ export default function AdminPage() {
                     <div className="flex gap-2 sm:flex-col">
                       <button
                         className="focus-ring flex-1 rounded-md bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-200"
-                        disabled={!isAdmin}
+                        disabled={!isAdmin || deletingAssetId === asset.id}
                         onClick={() => editAsset(asset)}
                         type="button"
                       >
@@ -496,7 +552,9 @@ export default function AdminPage() {
                         onClick={() => deleteAsset(asset)}
                         type="button"
                       >
-                        Delete
+                        <ButtonLoading isLoading={deletingAssetId === asset.id} loadingText="Deleting...">
+                          {pendingDeleteAssetId === asset.id ? "Confirm delete" : "Delete"}
+                        </ButtonLoading>
                       </button>
                     </div>
                   </article>
@@ -517,16 +575,20 @@ export default function AdminPage() {
                 </div>
               </div>
               <form className="mt-5 space-y-4" onSubmit={createNotification}>
-                <Field label="Title" value={noticeTitle} onChange={setNoticeTitle} />
-                <TextArea label="Body" value={noticeBody} onChange={setNoticeBody} />
-                <Field label="Delete after hours" value={noticeExpiryHours} onChange={setNoticeExpiryHours} placeholder="Example: 4, empty = never" />
+                <fieldset className="space-y-4 disabled:opacity-70" disabled={savingNotification}>
+                  <Field label="Title" value={noticeTitle} onChange={setNoticeTitle} />
+                  <TextArea label="Body" value={noticeBody} onChange={setNoticeBody} />
+                  <Field label="Delete after hours" value={noticeExpiryHours} onChange={setNoticeExpiryHours} placeholder="Example: 4, empty = never" />
+                </fieldset>
                 <button
                   className="focus-ring inline-flex w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:bg-slate-300"
-                  disabled={!isAdmin}
+                  disabled={!isAdmin || savingNotification}
                   type="submit"
                 >
-                  <Bell size={16} aria-hidden />
-                  {editingNotificationId ? "Update notification" : "Send announcement"}
+                  <ButtonLoading isLoading={savingNotification} loadingText="Saving...">
+                    <Bell size={16} aria-hidden />
+                    {editingNotificationId ? "Update notification" : "Send announcement"}
+                  </ButtonLoading>
                 </button>
                 {editingNotificationId ? (
                   <button
@@ -553,7 +615,7 @@ export default function AdminPage() {
                     <div className="mt-3 flex gap-2">
                       <button
                         className="focus-ring flex-1 rounded-md bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-200"
-                        disabled={!isAdmin}
+                        disabled={!isAdmin || deletingNotificationId === notification.id}
                         onClick={() => editNotification(notification)}
                         type="button"
                       >
@@ -565,7 +627,9 @@ export default function AdminPage() {
                         onClick={() => deleteNotification(notification)}
                         type="button"
                       >
-                        Delete
+                        <ButtonLoading isLoading={deletingNotificationId === notification.id} loadingText="Deleting...">
+                          {pendingDeleteNotificationId === notification.id ? "Confirm delete" : "Delete"}
+                        </ButtonLoading>
                       </button>
                     </div>
                   </article>
@@ -573,7 +637,7 @@ export default function AdminPage() {
               </div>
             </section>
 
-            {message ? <p className="rounded-lg bg-mist p-4 text-sm font-semibold text-orange-950">{message}</p> : null}
+            {message ? <FeedbackMessage tone={message.includes("deleted") || message.includes("updated") || message.includes("published") || message.includes("sent") ? "success" : "info"}>{message}</FeedbackMessage> : null}
           </aside>
         </section>
       </div>
@@ -642,5 +706,16 @@ function splitList(raw: string) {
   return raw
     .split(",")
     .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function paragraphList(raw: string) {
+  const cleaned = raw.replace(/\r\n/g, "\n").trim();
+  if (!cleaned) {
+    return [];
+  }
+  return cleaned
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
     .filter(Boolean);
 }

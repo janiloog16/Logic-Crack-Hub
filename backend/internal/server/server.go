@@ -8,9 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/mail"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,10 +27,11 @@ import (
 )
 
 type Server struct {
-	db    *sql.DB
-	cfg   config.Config
-	email *emailService
-	otp   *otpService
+	db          *sql.DB
+	cfg         config.Config
+	email       *emailService
+	otp         *otpService
+	rateLimiter *rateLimiter
 }
 
 type contextKey string
@@ -45,10 +50,11 @@ var dailyRewards = map[int]int{
 
 func New(db *sql.DB, cfg config.Config) *Server {
 	return &Server{
-		db:    db,
-		cfg:   cfg,
-		email: newEmailService(cfg),
-		otp:   newOTPService(cfg.JWTSecret),
+		db:          db,
+		cfg:         cfg,
+		email:       newEmailService(cfg),
+		otp:         newOTPService(cfg.JWTSecret),
+		rateLimiter: newRateLimiter(),
 	}
 }
 
@@ -67,13 +73,13 @@ func (s *Server) Routes() http.Handler {
 	})
 
 	r.Route("/api", func(r chi.Router) {
-		r.Post("/auth/register", s.register)
-		r.Post("/auth/login", s.login)
-		r.Post("/auth/forgot-password", s.forgotPassword)
-		r.Post("/auth/resend-email-verification", s.resendEmailVerification)
-		r.Post("/auth/verify-reset-code", s.verifyResetCode)
-		r.Post("/auth/reset-password", s.resetPassword)
-		r.Post("/auth/verify-email", s.verifyEmail)
+		r.With(s.limitSensitive("register", 5, 10*time.Minute)).Post("/auth/register", s.register)
+		r.With(s.limitSensitive("login", 8, 10*time.Minute)).Post("/auth/login", s.login)
+		r.With(s.limitSensitive("forgot-password", 4, 10*time.Minute)).Post("/auth/forgot-password", s.forgotPassword)
+		r.With(s.limitSensitive("resend-email-verification", 4, 10*time.Minute)).Post("/auth/resend-email-verification", s.resendEmailVerification)
+		r.With(s.limitSensitive("verify-reset-code", 8, 10*time.Minute)).Post("/auth/verify-reset-code", s.verifyResetCode)
+		r.With(s.limitSensitive("reset-password", 5, 10*time.Minute)).Post("/auth/reset-password", s.resetPassword)
+		r.With(s.limitSensitive("verify-email", 8, 10*time.Minute)).Post("/auth/verify-email", s.verifyEmail)
 
 		r.Get("/categories", s.listCategories)
 		r.Get("/assets", s.listAssets)
@@ -126,8 +132,9 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input.Name = strings.TrimSpace(input.Name)
-	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
-	if input.Name == "" || !strings.Contains(input.Email, "@") || len(input.Password) < 8 {
+	email, ok := normalizeEmail(input.Email)
+	input.Email = email
+	if !ok || input.Name == "" || len(input.Name) > 120 || len(input.Password) < 8 || len(input.Password) > 128 {
 		httpx.Error(w, http.StatusBadRequest, "name, valid email, and 8+ character password are required")
 		return
 	}
@@ -179,11 +186,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	email, ok := normalizeEmail(input.Email)
+	if !ok || input.Password == "" {
+		httpx.Error(w, http.StatusUnauthorized, "invalid email or password")
+		return
+	}
+
 	var user models.User
 	var passwordHash string
 	err := queryRowContext(s.db, r.Context(),
 		`SELECT id, name, email, password_hash, role, credits, created_at FROM users WHERE email = ?`,
-		strings.ToLower(strings.TrimSpace(input.Email)),
+		email,
 	).Scan(&user.ID, &user.Name, &user.Email, &passwordHash, &user.Role, &user.Credits, &user.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) || !auth.CheckPassword(passwordHash, input.Password) {
 		httpx.Error(w, http.StatusUnauthorized, "invalid email or password")
@@ -212,7 +225,11 @@ func (s *Server) forgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(input.Email))
+	email, ok := normalizeEmail(input.Email)
+	if !ok {
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "if the account exists, a reset code was sent"})
+		return
+	}
 	var userID int64
 	var name string
 	err := queryRowContext(s.db, r.Context(), `SELECT id, name FROM users WHERE email = ?`, email).Scan(&userID, &name)
@@ -270,7 +287,11 @@ func (s *Server) resendEmailVerification(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(input.Email))
+	email, ok := normalizeEmail(input.Email)
+	if !ok {
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "if this email can be verified, a code was sent"})
+		return
+	}
 	var pending struct {
 		ID                int64
 		Name              string
@@ -327,7 +348,11 @@ func (s *Server) verifyResetCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(input.Email))
+	email, ok := normalizeEmail(input.Email)
+	if !ok {
+		httpx.Error(w, http.StatusBadRequest, "reset code is invalid or expired")
+		return
+	}
 	var reset struct {
 		ID        int64
 		OTPHash   string
@@ -480,7 +505,11 @@ func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(input.Email))
+	email, ok := normalizeEmail(input.Email)
+	if !ok {
+		httpx.Error(w, http.StatusBadRequest, "verification code is invalid or expired")
+		return
+	}
 	code := strings.TrimSpace(input.OTP)
 	if code == "" {
 		code = strings.TrimSpace(input.Token)
@@ -675,6 +704,7 @@ func (s *Server) createAsset(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "asset created but could not be loaded")
 		return
 	}
+	s.logAdminAction(r.Context(), currentUser(r).ID, "asset.create", "asset", id, map[string]any{"title": asset.Title, "slug": asset.Slug})
 	httpx.JSON(w, http.StatusCreated, map[string]any{"asset": asset})
 }
 
@@ -712,6 +742,7 @@ func (s *Server) updateAsset(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "asset not found")
 		return
 	}
+	s.logAdminAction(r.Context(), currentUser(r).ID, "asset.update", "asset", id, map[string]any{"title": asset.Title, "slug": asset.Slug})
 	httpx.JSON(w, http.StatusOK, map[string]any{"asset": asset})
 }
 
@@ -732,6 +763,7 @@ func (s *Server) deleteAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logAdminAction(r.Context(), currentUser(r).ID, "asset.delete", "asset", id, nil)
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -1161,6 +1193,7 @@ func (s *Server) updateRequestStatus(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "could not update request status")
 		return
 	}
+	s.logAdminAction(r.Context(), currentUser(r).ID, "request.status.update", "asset_request", id, map[string]any{"status": status})
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": status})
 }
 
@@ -1268,6 +1301,7 @@ func (s *Server) createNotification(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "could not create notification")
 		return
 	}
+	s.logAdminAction(r.Context(), currentUser(r).ID, "notification.create", "notification", id, map[string]any{"title": strings.TrimSpace(input.Title), "type": strings.TrimSpace(input.Type)})
 	httpx.JSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
@@ -1330,6 +1364,7 @@ func (s *Server) updateNotification(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "notification not found")
 		return
 	}
+	s.logAdminAction(r.Context(), currentUser(r).ID, "notification.update", "notification", id, map[string]any{"title": strings.TrimSpace(input.Title), "type": strings.TrimSpace(input.Type)})
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
@@ -1348,6 +1383,7 @@ func (s *Server) deleteNotification(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "notification not found")
 		return
 	}
+	s.logAdminAction(r.Context(), currentUser(r).ID, "notification.delete", "notification", id, nil)
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -1426,6 +1462,18 @@ func currentUser(r *http.Request) *models.User {
 	return user
 }
 
+func (s *Server) logAdminAction(ctx context.Context, adminID int64, action, targetType string, targetID int64, metadata map[string]any) {
+	rawMetadata, err := json.Marshal(metadata)
+	if err != nil {
+		rawMetadata = []byte("{}")
+	}
+	_, _ = execContext(s.db, ctx,
+		`INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, metadata)
+		 VALUES (?, ?, ?, ?, ?::jsonb)`,
+		adminID, action, targetType, targetID, string(rawMetadata),
+	)
+}
+
 type assetPayload struct {
 	Title        string   `json:"title"`
 	Slug         string   `json:"slug"`
@@ -1452,14 +1500,32 @@ func decodeAssetPayload(w http.ResponseWriter, r *http.Request) (assetPayload, b
 
 	payload.Title = strings.TrimSpace(payload.Title)
 	payload.Slug = slugify(payload.Slug)
+	payload.ThumbnailURL = strings.TrimSpace(payload.ThumbnailURL)
 	payload.DownloadURL = strings.TrimSpace(payload.DownloadURL)
 	payload.Description = strings.TrimSpace(payload.Description)
 	payload.UnityVersion = strings.TrimSpace(payload.UnityVersion)
 	payload.FileSize = strings.TrimSpace(payload.FileSize)
 	payload.Version = strings.TrimSpace(payload.Version)
+	for index := range payload.GalleryURLs {
+		payload.GalleryURLs[index] = strings.TrimSpace(payload.GalleryURLs[index])
+	}
 	if payload.Title == "" || payload.Description == "" || payload.CategoryID <= 0 || payload.CreditCost < 0 {
 		httpx.Error(w, http.StatusBadRequest, "title, description, category, and non-negative credit cost are required")
 		return payload, false
+	}
+	if len(payload.Title) > 180 || len(payload.Description) > 5000 || len(payload.UnityVersion) > 60 || len(payload.FileSize) > 60 || len(payload.Version) > 60 {
+		httpx.Error(w, http.StatusBadRequest, "asset fields are too long")
+		return payload, false
+	}
+	if !validHTTPURL(payload.ThumbnailURL, true) || !validHTTPURL(payload.DownloadURL, false) {
+		httpx.Error(w, http.StatusBadRequest, "valid thumbnail and download URLs are required")
+		return payload, false
+	}
+	for _, galleryURL := range payload.GalleryURLs {
+		if !validHTTPURL(galleryURL, true) {
+			httpx.Error(w, http.StatusBadRequest, "gallery URLs must be valid")
+			return payload, false
+		}
 	}
 	if payload.Version == "" {
 		payload.Version = "1.0.0"
@@ -1576,6 +1642,93 @@ func emailAlreadyRegistered(ctx context.Context, db sqlRunner, email string) boo
 	var exists bool
 	err := queryRowContext(db, ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE email = ?)`, email).Scan(&exists)
 	return err == nil && exists
+}
+
+type rateLimiter struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+}
+
+func newRateLimiter() *rateLimiter {
+	return &rateLimiter{attempts: map[string][]time.Time{}}
+}
+
+func (s *Server) limitSensitive(scope string, maxAttempts int, window time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			key := scope + ":" + clientIP(r)
+			if !s.rateLimiter.allow(key, maxAttempts, window) {
+				httpx.Error(w, http.StatusTooManyRequests, "too many attempts, please wait and try again")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func (l *rateLimiter) allow(key string, maxAttempts int, window time.Duration) bool {
+	now := time.Now()
+	cutoff := now.Add(-window)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	hits := l.attempts[key]
+	kept := hits[:0]
+	for _, hit := range hits {
+		if hit.After(cutoff) {
+			kept = append(kept, hit)
+		}
+	}
+	if len(kept) >= maxAttempts {
+		l.attempts[key] = kept
+		return false
+	}
+	l.attempts[key] = append(kept, now)
+	return true
+}
+
+func clientIP(r *http.Request) string {
+	for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
+		value := strings.TrimSpace(r.Header.Get(header))
+		if value == "" {
+			continue
+		}
+		if header == "X-Forwarded-For" {
+			value = strings.TrimSpace(strings.Split(value, ",")[0])
+		}
+		if parsed := net.ParseIP(value); parsed != nil {
+			return parsed.String()
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func normalizeEmail(email string) (string, bool) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if len(email) > 190 {
+		return "", false
+	}
+	parsed, err := mail.ParseAddress(email)
+	if err != nil || parsed.Address != email {
+		return "", false
+	}
+	return email, true
+}
+
+func validHTTPURL(value string, required bool) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return !required
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
 
 func slugify(value string) string {

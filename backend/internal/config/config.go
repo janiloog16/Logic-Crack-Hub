@@ -8,26 +8,32 @@ import (
 )
 
 type Config struct {
-	Port               string
-	DatabaseDSN        string
-	JWTSecret          string
-	BrevoAPIKey        string
-	BrevoSenderName    string
-	BrevoSenderEmail   string
-	CORSAllowedOrigins []string
+	Port                string
+	DatabaseDSN         string
+	JWTSecret           string
+	BrevoAPIKey         string
+	BrevoSenderName     string
+	BrevoSenderEmail    string
+	SupabaseURL         string
+	SupabaseServiceKey  string
+	SupabaseAssetBucket string
+	CORSAllowedOrigins  []string
 }
 
 func Load() Config {
 	_ = godotenv.Load()
 
 	return Config{
-		Port:               value("PORT", "8080"),
-		DatabaseDSN:        databaseURL(),
-		JWTSecret:          value("JWT_SECRET", "change-this-dev-secret"),
-		BrevoAPIKey:        value("BREVO_API_KEY", ""),
-		BrevoSenderName:    value("BREVO_SENDER_NAME", "Logic Crack Hub"),
-		BrevoSenderEmail:   value("BREVO_SENDER_EMAIL", ""),
-		CORSAllowedOrigins: split(value("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")),
+		Port:                value("PORT", "8080"),
+		DatabaseDSN:         databaseURL(),
+		JWTSecret:           value("JWT_SECRET", "change-this-dev-secret"),
+		BrevoAPIKey:         value("BREVO_API_KEY", ""),
+		BrevoSenderName:     value("BREVO_SENDER_NAME", "Logic Crack Hub"),
+		BrevoSenderEmail:    value("BREVO_SENDER_EMAIL", ""),
+		SupabaseURL:         value("SUPABASE_URL", ""),
+		SupabaseServiceKey:  value("SUPABASE_SERVICE_ROLE_KEY", ""),
+		SupabaseAssetBucket: value("SUPABASE_ASSET_BUCKET", "assets"),
+		CORSAllowedOrigins:  split(value("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")),
 	}
 }
 

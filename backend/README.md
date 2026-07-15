@@ -69,7 +69,12 @@ go run .\cmd\api
 
 For Supabase, set `DATABASE_URL` in `.env` to your project connection string with `sslmode=require`.
 
-If the database already exists, run `database/email_auth_migration.sql` once in Supabase SQL Editor to add email verification and password reset OTP tables.
+If the database already exists, run these once in Supabase SQL Editor:
+
+```text
+database/email_auth_migration.sql
+database/admin_audit_logs_migration.sql
+```
 
 API URL:
 
@@ -119,11 +124,22 @@ JWT_SECRET=use a long random secret
 BREVO_API_KEY=your Brevo transactional email API key
 BREVO_SENDER_NAME=Logic Crack Hub
 BREVO_SENDER_EMAIL=your verified Brevo sender email
+SUPABASE_URL=your Supabase project URL
+SUPABASE_SERVICE_ROLE_KEY=your Supabase service role key for server-only storage work
+SUPABASE_ASSET_BUCKET=assets
 CORS_ALLOWED_ORIGINS=https://your-netlify-site.netlify.app
 SUPABASE_POOLER_REGION=your Supabase project region, for example ap-southeast-2
 ```
 
 For Netlify Functions, the Supabase pooler is recommended because direct database hosts can be IPv6-only. The Netlify function can retry a Supabase direct URL through the pooler when `SUPABASE_POOLER_REGION` is set.
+
+Security hardening included:
+
+- JWT auth with bcrypt password hashing
+- OTP email verification and password reset through Brevo
+- Rate limiting on sensitive auth endpoints
+- Admin audit logs for asset, notification, and request-status changes
+- Backend validation for email addresses and asset URLs
 
 Production URLs:
 

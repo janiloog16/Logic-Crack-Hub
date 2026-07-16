@@ -75,3 +75,27 @@ type Notification struct {
 	ExpiresAt *time.Time `json:"expires_at"`
 	CreatedAt time.Time  `json:"created_at"`
 }
+
+type ConversationUser struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	FullName  string `json:"full_name"`
+	AvatarURL string `json:"avatar_url"`
+}
+
+type Conversation struct {
+	ID          int64            `json:"id"`
+	OtherUser   ConversationUser `json:"other_user"`
+	LastMessage *Message         `json:"last_message"`
+	UnreadCount int              `json:"unread_count"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+}
+
+type Message struct {
+	ID                   int64      `json:"id"`
+	ConversationID       int64      `json:"conversation_id"`
+	SenderID             int64      `json:"sender_id"`
+	Body                 string     `json:"body"`
+	DeletedForEveryoneAt *time.Time `json:"deleted_for_everyone_at"`
+	CreatedAt            time.Time  `json:"created_at"`
+}

@@ -1,18 +1,35 @@
 "use client";
 
 import Link from "next/link";
-import { LayoutDashboard, LogIn, LogOut, Menu, Package, Search, ShieldCheck, UserIcon, UserPlus, X } from "lucide-react";
-import { useState } from "react";
+import { Inbox, LayoutDashboard, LogIn, LogOut, Menu, Package, Search, ShieldCheck, UserIcon, UserPlus, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
 import type { User } from "@/lib/types";
 
 type SiteHeaderProps = {
   user: User | null;
   onLogout?: () => void;
+  unreadMessages?: number;
 };
 
-export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
+export function SiteHeader({ user, onLogout, unreadMessages }: SiteHeaderProps) {
   const isAdmin = user?.role === "admin";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    if (typeof unreadMessages === "number") {
+      setUnreadCount(unreadMessages);
+      return;
+    }
+    if (!user) {
+      setUnreadCount(0);
+      return;
+    }
+    apiFetch<{ unread_count: number }>("/messages/unread-count")
+      .then((response) => setUnreadCount(response.unread_count))
+      .catch(() => setUnreadCount(0));
+  }, [unreadMessages, user]);
 
   function closeMobileMenu() {
     setMobileMenuOpen(false);
@@ -21,6 +38,13 @@ export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
   function logout() {
     closeMobileMenu();
     onLogout?.();
+  }
+
+  function prefetchInbox() {
+    if (!user || typeof unreadMessages === "number") {
+      return;
+    }
+    void apiFetch("/messages/conversations").catch(() => undefined);
   }
 
   const navItems = [
@@ -61,6 +85,20 @@ export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
           </Link>
           {user ? (
             <>
+              <Link
+                className="focus-ring btn-secondary relative inline-flex h-10 w-10 items-center justify-center rounded-full"
+                href="/messages"
+                aria-label="Messages"
+                onFocus={prefetchInbox}
+                onMouseEnter={prefetchInbox}
+              >
+                <Inbox size={17} aria-hidden />
+                {unreadCount > 0 ? (
+                  <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-red-500 px-1.5 py-0.5 text-center text-[10px] font-black text-white">
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </span>
+                ) : null}
+              </Link>
               <Link
                 className="focus-ring btn-secondary inline-flex h-10 w-10 items-center justify-center overflow-hidden rounded-full"
                 href="/profile"
@@ -148,6 +186,9 @@ export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
                 <>
                   <Link className="focus-ring rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm font-black uppercase text-white" href="/profile" onClick={closeMobileMenu}>
                     Profile
+                  </Link>
+                  <Link className="focus-ring rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm font-black uppercase text-white" href="/messages" onClick={closeMobileMenu}>
+                    Messages{unreadCount > 0 ? ` (${unreadCount > 99 ? "99+" : unreadCount})` : ""}
                   </Link>
                   <span className="inline-flex items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-3 text-sm font-bold text-slate-100">
                     <ShieldCheck size={16} aria-hidden />

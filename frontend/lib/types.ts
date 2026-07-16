@@ -99,3 +99,27 @@ export type CreditTransaction = {
   description: string;
   created_at: string;
 };
+
+export type ConversationUser = {
+  id: number;
+  name: string;
+  full_name: string;
+  avatar_url: string;
+};
+
+export type Message = {
+  id: number;
+  conversation_id: number;
+  sender_id: number;
+  body: string;
+  deleted_for_everyone_at: string | null;
+  created_at: string;
+};
+
+export type Conversation = {
+  id: number;
+  other_user: ConversationUser;
+  last_message: Message | null;
+  unread_count: number;
+  updated_at: string;
+};

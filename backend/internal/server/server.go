@@ -66,7 +66,7 @@ func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   s.cfg.CORSAllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -108,6 +108,16 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/requests", s.createRequest)
 			r.Post("/requests/{id}/vote", s.voteRequest)
 			r.Get("/notifications", s.listNotifications)
+			r.Get("/messages/users", s.searchMessageUsers)
+			r.Get("/messages/unread-count", s.unreadMessageCount)
+			r.Get("/messages/conversations", s.listConversations)
+			r.Post("/messages/conversations", s.startConversation)
+			r.Get("/messages/conversations/{id}", s.getConversationMessages)
+			r.Post("/messages/conversations/{id}/messages", s.sendMessage)
+			r.Patch("/messages/conversations/{id}/read", s.markConversationRead)
+			r.Delete("/messages/{id}", s.deleteMessageForMe)
+			r.Delete("/messages/{id}/everyone", s.deleteMessageForEveryone)
+			r.Post("/messages/{id}/forward", s.forwardMessage)
 		})
 
 		r.Group(func(r chi.Router) {
@@ -1429,6 +1439,384 @@ func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"notifications": notifications})
 }
 
+func (s *Server) searchMessageUsers(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	if len(search) > 80 {
+		search = search[:80]
+	}
+	like := "%" + strings.ToLower(search) + "%"
+	rows, err := queryContext(s.db, r.Context(),
+		`SELECT id, name, COALESCE(full_name, ''), COALESCE(avatar_url, '')
+		 FROM users
+		 WHERE id <> ? AND (? = '' OR LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(COALESCE(full_name, '')) LIKE ?)
+		 ORDER BY created_at DESC
+		 LIMIT 20`,
+		user.ID, search, like, like, like,
+	)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not search users")
+		return
+	}
+	defer rows.Close()
+
+	users := []models.ConversationUser{}
+	for rows.Next() {
+		var item models.ConversationUser
+		if err := rows.Scan(&item.ID, &item.Name, &item.FullName, &item.AvatarURL); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "could not read users")
+			return
+		}
+		users = append(users, item)
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"users": users})
+}
+
+func (s *Server) unreadMessageCount(w http.ResponseWriter, r *http.Request) {
+	userID := currentUser(r).ID
+	var count int
+	err := queryRowContext(s.db, r.Context(),
+		`SELECT COUNT(*)
+		 FROM messages m
+		 JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id AND cp.user_id = ?
+		 WHERE m.sender_id <> ? AND (cp.last_read_at IS NULL OR m.created_at > cp.last_read_at)`,
+		userID, userID,
+	).Scan(&count)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not load unread messages")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"unread_count": count})
+}
+
+func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
+	userID := currentUser(r).ID
+	rows, err := queryContext(s.db, r.Context(),
+		`SELECT c.id, c.updated_at, u.id, u.name, COALESCE(u.full_name, ''), COALESCE(u.avatar_url, ''),
+		        lm.id, lm.sender_id, lm.body, lm.created_at,
+		        COALESCE(unread.unread_count, 0) AS unread_count
+		 FROM conversations c
+		 JOIN conversation_participants cp ON cp.conversation_id = c.id AND cp.user_id = ?
+		 JOIN conversation_participants other_cp ON other_cp.conversation_id = c.id AND other_cp.user_id <> ?
+		 JOIN users u ON u.id = other_cp.user_id
+		 LEFT JOIN LATERAL (
+		   SELECT id, sender_id, body, created_at
+		   FROM messages
+		   WHERE conversation_id = c.id
+		     AND deleted_for_everyone_at IS NULL
+		     AND NOT EXISTS (SELECT 1 FROM message_deletions md WHERE md.message_id = messages.id AND md.user_id = ?)
+		   ORDER BY created_at DESC
+		   LIMIT 1
+		 ) lm ON TRUE
+		 LEFT JOIN LATERAL (
+		   SELECT COUNT(*) AS unread_count
+		   FROM messages unread
+		   WHERE unread.conversation_id = c.id
+		     AND unread.sender_id <> ?
+		     AND (cp.last_read_at IS NULL OR unread.created_at > cp.last_read_at)
+		 ) unread ON TRUE
+		 ORDER BY c.updated_at DESC
+		 LIMIT 50`,
+		userID, userID, userID, userID,
+	)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not load conversations")
+		return
+	}
+	defer rows.Close()
+
+	conversations := []models.Conversation{}
+	for rows.Next() {
+		conversation, err := scanConversation(rows)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "could not read conversations")
+			return
+		}
+		conversations = append(conversations, conversation)
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"conversations": conversations})
+}
+
+func (s *Server) startConversation(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		UserID int64 `json:"user_id"`
+	}
+	if err := httpx.Decode(r, &input); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	current := currentUser(r)
+	if input.UserID <= 0 || input.UserID == current.ID {
+		httpx.Error(w, http.StatusBadRequest, "choose another user to message")
+		return
+	}
+	if _, err := s.userByID(r.Context(), input.UserID); err != nil {
+		httpx.Error(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	conversationID, err := s.findConversationID(r.Context(), current.ID, input.UserID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not start conversation")
+		return
+	}
+	if conversationID == 0 {
+		conversationID, err = s.createConversation(r.Context(), current.ID, input.UserID)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "could not start conversation")
+			return
+		}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"conversation_id": conversationID})
+}
+
+func (s *Server) getConversationMessages(w http.ResponseWriter, r *http.Request) {
+	conversationID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	userID := currentUser(r).ID
+	if !s.userCanAccessConversation(r.Context(), conversationID, userID) {
+		httpx.Error(w, http.StatusForbidden, "conversation access denied")
+		return
+	}
+	_ = s.markRead(r.Context(), conversationID, userID)
+
+	rows, err := queryContext(s.db, r.Context(),
+		`SELECT id, conversation_id, sender_id, body, deleted_for_everyone_at, created_at
+		 FROM messages
+		 WHERE conversation_id = ?
+		   AND NOT EXISTS (SELECT 1 FROM message_deletions md WHERE md.message_id = messages.id AND md.user_id = ?)
+		 ORDER BY created_at ASC
+		 LIMIT 100`,
+		conversationID, userID,
+	)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not load messages")
+		return
+	}
+	defer rows.Close()
+
+	messages := []models.Message{}
+	for rows.Next() {
+		var message models.Message
+		if err := rows.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.Body, &message.DeletedForEveryoneAt, &message.CreatedAt); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "could not read messages")
+			return
+		}
+		messages = append(messages, message)
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"messages": messages})
+}
+
+func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
+	conversationID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input struct {
+		Body string `json:"body"`
+	}
+	if err := httpx.Decode(r, &input); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	input.Body = strings.TrimSpace(input.Body)
+	if input.Body == "" || len(input.Body) > 2000 {
+		httpx.Error(w, http.StatusBadRequest, "message must be 1-2000 characters")
+		return
+	}
+	userID := currentUser(r).ID
+	if !s.userCanAccessConversation(r.Context(), conversationID, userID) {
+		httpx.Error(w, http.StatusForbidden, "conversation access denied")
+		return
+	}
+
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not send message")
+		return
+	}
+	defer tx.Rollback()
+
+	var message models.Message
+	err = queryRowContext(tx, r.Context(),
+		`INSERT INTO messages (conversation_id, sender_id, body)
+		 VALUES (?, ?, ?)
+		 RETURNING id, conversation_id, sender_id, body, deleted_for_everyone_at, created_at`,
+		conversationID, userID, input.Body,
+	).Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.Body, &message.DeletedForEveryoneAt, &message.CreatedAt)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not send message")
+		return
+	}
+	if _, err := execContext(tx, r.Context(), `UPDATE conversations SET updated_at = ? WHERE id = ?`, message.CreatedAt, conversationID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not send message")
+		return
+	}
+	if _, err := execContext(tx, r.Context(), `UPDATE conversation_participants SET last_read_at = ? WHERE conversation_id = ? AND user_id = ?`, message.CreatedAt, conversationID, userID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not send message")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not send message")
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{"message": message})
+}
+
+func (s *Server) markConversationRead(w http.ResponseWriter, r *http.Request) {
+	conversationID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	userID := currentUser(r).ID
+	if !s.userCanAccessConversation(r.Context(), conversationID, userID) {
+		httpx.Error(w, http.StatusForbidden, "conversation access denied")
+		return
+	}
+	if err := s.markRead(r.Context(), conversationID, userID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not mark conversation read")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "read"})
+}
+
+func (s *Server) deleteMessageForMe(w http.ResponseWriter, r *http.Request) {
+	messageID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	userID := currentUser(r).ID
+	message, err := s.messageByID(r.Context(), messageID)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpx.Error(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not delete message")
+		return
+	}
+	if !s.userCanAccessConversation(r.Context(), message.ConversationID, userID) {
+		httpx.Error(w, http.StatusNotFound, "message not found")
+		return
+	}
+	_, err = execContext(s.db, r.Context(),
+		`INSERT INTO message_deletions (message_id, user_id)
+		 VALUES (?, ?)
+		 ON CONFLICT (message_id, user_id) DO NOTHING`,
+		messageID, userID,
+	)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not delete message")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) deleteMessageForEveryone(w http.ResponseWriter, r *http.Request) {
+	messageID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	userID := currentUser(r).ID
+	message, err := s.messageByID(r.Context(), messageID)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpx.Error(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not delete message")
+		return
+	}
+	if !s.userCanAccessConversation(r.Context(), message.ConversationID, userID) {
+		httpx.Error(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if message.SenderID != userID {
+		httpx.Error(w, http.StatusForbidden, "only the sender can delete this message for everyone")
+		return
+	}
+	_, err = execContext(s.db, r.Context(),
+		`UPDATE messages SET body = 'This message was deleted', deleted_for_everyone_at = now() WHERE id = ?`,
+		messageID,
+	)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not delete message")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted_for_everyone"})
+}
+
+func (s *Server) forwardMessage(w http.ResponseWriter, r *http.Request) {
+	messageID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input struct {
+		ConversationID int64 `json:"conversation_id"`
+	}
+	if err := httpx.Decode(r, &input); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	userID := currentUser(r).ID
+	source, err := s.messageByID(r.Context(), messageID)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpx.Error(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not forward message")
+		return
+	}
+	if !s.userCanAccessConversation(r.Context(), source.ConversationID, userID) {
+		httpx.Error(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if source.DeletedForEveryoneAt != nil {
+		httpx.Error(w, http.StatusBadRequest, "deleted messages cannot be forwarded")
+		return
+	}
+	if input.ConversationID <= 0 || !s.userCanAccessConversation(r.Context(), input.ConversationID, userID) {
+		httpx.Error(w, http.StatusForbidden, "conversation access denied")
+		return
+	}
+
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not forward message")
+		return
+	}
+	defer tx.Rollback()
+
+	var forwarded models.Message
+	body := "Forwarded: " + source.Body
+	err = queryRowContext(tx, r.Context(),
+		`INSERT INTO messages (conversation_id, sender_id, body)
+		 VALUES (?, ?, ?)
+		 RETURNING id, conversation_id, sender_id, body, deleted_for_everyone_at, created_at`,
+		input.ConversationID, userID, body,
+	).Scan(&forwarded.ID, &forwarded.ConversationID, &forwarded.SenderID, &forwarded.Body, &forwarded.DeletedForEveryoneAt, &forwarded.CreatedAt)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not forward message")
+		return
+	}
+	if _, err := execContext(tx, r.Context(), `UPDATE conversations SET updated_at = ? WHERE id = ?`, forwarded.CreatedAt, input.ConversationID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not forward message")
+		return
+	}
+	if _, err := execContext(tx, r.Context(), `UPDATE conversation_participants SET last_read_at = ? WHERE conversation_id = ? AND user_id = ?`, forwarded.CreatedAt, input.ConversationID, userID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not forward message")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not forward message")
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{"message": forwarded})
+}
+
 func (s *Server) createNotification(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Title        string `json:"title"`
@@ -1772,6 +2160,94 @@ func decodeProfileItems(raw string) []map[string]any {
 	items := []map[string]any{}
 	_ = json.Unmarshal([]byte(raw), &items)
 	return items
+}
+
+func scanConversation(scanner rowScanner) (models.Conversation, error) {
+	var conversation models.Conversation
+	var lastID sql.NullInt64
+	var lastSenderID sql.NullInt64
+	var lastBody sql.NullString
+	var lastCreatedAt sql.NullTime
+	err := scanner.Scan(
+		&conversation.ID, &conversation.UpdatedAt, &conversation.OtherUser.ID, &conversation.OtherUser.Name,
+		&conversation.OtherUser.FullName, &conversation.OtherUser.AvatarURL, &lastID, &lastSenderID,
+		&lastBody, &lastCreatedAt, &conversation.UnreadCount,
+	)
+	if err != nil {
+		return conversation, err
+	}
+	if lastID.Valid {
+		conversation.LastMessage = &models.Message{
+			ID:             lastID.Int64,
+			ConversationID: conversation.ID,
+			SenderID:       lastSenderID.Int64,
+			Body:           lastBody.String,
+			CreatedAt:      lastCreatedAt.Time,
+		}
+	}
+	return conversation, nil
+}
+
+func (s *Server) findConversationID(ctx context.Context, firstUserID, secondUserID int64) (int64, error) {
+	var conversationID int64
+	err := queryRowContext(s.db, ctx,
+		`SELECT cp1.conversation_id
+		 FROM conversation_participants cp1
+		 JOIN conversation_participants cp2 ON cp2.conversation_id = cp1.conversation_id
+		 WHERE cp1.user_id = ? AND cp2.user_id = ?
+		 LIMIT 1`,
+		firstUserID, secondUserID,
+	).Scan(&conversationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return conversationID, err
+}
+
+func (s *Server) createConversation(ctx context.Context, firstUserID, secondUserID int64) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var conversationID int64
+	if err := queryRowContext(tx, ctx, `INSERT INTO conversations DEFAULT VALUES RETURNING id`).Scan(&conversationID); err != nil {
+		return 0, err
+	}
+	if _, err := execContext(tx, ctx, `INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?), (?, ?)`, conversationID, firstUserID, conversationID, secondUserID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return conversationID, nil
+}
+
+func (s *Server) userCanAccessConversation(ctx context.Context, conversationID, userID int64) bool {
+	var exists bool
+	err := queryRowContext(s.db, ctx,
+		`SELECT EXISTS(SELECT 1 FROM conversation_participants WHERE conversation_id = ? AND user_id = ?)`,
+		conversationID, userID,
+	).Scan(&exists)
+	return err == nil && exists
+}
+
+func (s *Server) markRead(ctx context.Context, conversationID, userID int64) error {
+	_, err := execContext(s.db, ctx,
+		`UPDATE conversation_participants SET last_read_at = now() WHERE conversation_id = ? AND user_id = ?`,
+		conversationID, userID,
+	)
+	return err
+}
+
+func (s *Server) messageByID(ctx context.Context, messageID int64) (models.Message, error) {
+	var message models.Message
+	err := queryRowContext(s.db, ctx,
+		`SELECT id, conversation_id, sender_id, body, deleted_for_everyone_at, created_at FROM messages WHERE id = ?`,
+		messageID,
+	).Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.Body, &message.DeletedForEveryoneAt, &message.CreatedAt)
+	return message, err
 }
 
 func (s *Server) uploadSupabaseObject(ctx context.Context, objectPath, contentType string, content []byte) (string, error) {

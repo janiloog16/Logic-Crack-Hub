@@ -22,6 +22,18 @@ func main() {
 		log.Fatalf("database: %v", err)
 	}
 	defer db.Close()
+	go func() {
+		ticker := time.NewTicker(4 * time.Minute)
+		defer ticker.Stop()
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := db.PingContext(ctx); err != nil {
+				log.Printf("database warm ping failed: %v", err)
+			}
+			cancel()
+			<-ticker.C
+		}
+	}()
 
 	api := server.New(db, cfg)
 	httpServer := &http.Server{

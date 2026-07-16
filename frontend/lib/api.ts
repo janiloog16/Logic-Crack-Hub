@@ -1,4 +1,16 @@
-import type { Asset, AssetRequest, Category, CreditTransaction, Notification, ProfileActivity, ProfileStats, User } from "./types";
+import type {
+  Asset,
+  AssetRequest,
+  Category,
+  Conversation,
+  ConversationUser,
+  CreditTransaction,
+  Message,
+  Notification,
+  ProfileActivity,
+  ProfileStats,
+  User,
+} from "./types";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ??
@@ -41,6 +53,18 @@ export type ProfileResponse = {
   user: User;
   stats: ProfileStats;
   activity: ProfileActivity;
+};
+
+export type ConversationsResponse = {
+  conversations: Conversation[];
+};
+
+export type MessagesResponse = {
+  messages: Message[];
+};
+
+export type MessageUsersResponse = {
+  users: ConversationUser[];
 };
 
 export function getToken() {

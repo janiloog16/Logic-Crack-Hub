@@ -2,9 +2,45 @@ export type User = {
   id: number;
   name: string;
   email: string;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  bio: string;
+  date_of_birth: string;
+  avatar_url: string;
+  location: string;
+  website: string;
   role: "user" | "admin";
   credits: number;
   created_at: string;
+};
+
+export type ProfileStats = {
+  favorites: number;
+  reviews: number;
+  downloads: number;
+  requests: number;
+  credit_events: number;
+};
+
+export type ProfileAssetItem = {
+  id: number;
+  title: string;
+  slug: string;
+  thumbnail_url: string;
+  created_at: string;
+};
+
+export type ProfileReviewItem = ProfileAssetItem & {
+  rating: number;
+  comment: string;
+  updated_at: string;
+};
+
+export type ProfileActivity = {
+  downloads: ProfileAssetItem[];
+  favorites: ProfileAssetItem[];
+  reviews: ProfileReviewItem[];
 };
 
 export type Category = {
@@ -42,6 +78,7 @@ export type AssetRequest = {
   reason: string;
   status: "open" | "planned" | "released" | "declined";
   vote_count: number;
+  voted: boolean;
   requested_by: string;
   created_at: string;
 };

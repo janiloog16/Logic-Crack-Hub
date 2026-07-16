@@ -11,6 +11,7 @@ artifacts/
 *.log
 *.tmp
 .netlify/
+backend/uploads/
 
 # Go
 bin/

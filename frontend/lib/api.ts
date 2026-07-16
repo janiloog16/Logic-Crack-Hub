@@ -1,4 +1,4 @@
-import type { Asset, AssetRequest, Category, CreditTransaction, Notification, User } from "./types";
+import type { Asset, AssetRequest, Category, CreditTransaction, Notification, ProfileActivity, ProfileStats, User } from "./types";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ??
@@ -37,6 +37,12 @@ export type StatsResponse = {
   stats: Record<string, number>;
 };
 
+export type ProfileResponse = {
+  user: User;
+  stats: ProfileStats;
+  activity: ProfileActivity;
+};
+
 export function getToken() {
   if (typeof window === "undefined") {
     return null;
@@ -73,7 +79,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   const headers = new Headers(options.headers);
   const token = getToken();
 
-  if (!headers.has("Content-Type") && options.body) {
+  if (!headers.has("Content-Type") && options.body && !(options.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
   if (token) {

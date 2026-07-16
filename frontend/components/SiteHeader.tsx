@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { LayoutDashboard, LogIn, LogOut, Menu, Package, Search, ShieldCheck, UserPlus, X } from "lucide-react";
+import { LayoutDashboard, LogIn, LogOut, Menu, Package, Search, ShieldCheck, UserIcon, UserPlus, X } from "lucide-react";
 import { useState } from "react";
 import type { User } from "@/lib/types";
 
@@ -25,28 +25,26 @@ export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
 
   const navItems = [
     { label: "Assets", href: "/#assets" },
-    { label: "Categories", href: "/#assets" },
     { label: "Popular", href: "/#assets" },
     { label: "Latest", href: "/#assets" },
-    { label: "Forum", href: "/#requests" },
   ];
 
   return (
     <header className="glass-nav sticky top-0 z-30 text-white">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-3 py-3 sm:px-6 sm:py-4">
-        <Link href="/" className="flex min-w-0 items-center gap-2 sm:gap-3" onClick={closeMobileMenu}>
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-3 py-3 sm:px-6 sm:py-4">
+        <Link href="/" className="flex min-w-[220px] shrink-0 items-center gap-2 sm:min-w-[280px] sm:gap-3" onClick={closeMobileMenu}>
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#ff5252] to-[#8f1014] text-white shadow-[0_12px_34px_rgba(229,57,53,0.32)] sm:h-11 sm:w-11">
             <Package size={18} aria-hidden />
           </span>
           <span className="min-w-0">
-            <span className="block truncate text-base font-black uppercase text-white sm:text-xl">Logic Crack Hub</span>
-            <span className="hidden truncate text-xs font-bold uppercase text-[#b6b6b6] sm:block">Premium Unity assets</span>
+            <span className="block whitespace-nowrap text-base font-black uppercase text-white sm:text-xl">Logic Crack Hub</span>
+            <span className="hidden whitespace-nowrap text-xs font-bold uppercase text-[#b6b6b6] sm:block">Premium Unity assets</span>
           </span>
         </Link>
 
         <nav className="hidden items-center rounded-full border border-white/10 bg-white/[0.03] p-1 md:flex">
           {navItems.map((item) => (
-            <Link className="rounded-full px-3 py-2 text-sm font-bold text-[#d7d7d7] transition hover:bg-white/10 hover:text-white" href={item.href} key={item.label}>
+            <Link className="rounded-full px-4 py-2 text-sm font-bold text-[#d7d7d7] transition hover:bg-white/10 hover:text-white" href={item.href} key={item.label}>
               {item.label}
             </Link>
           ))}
@@ -63,6 +61,18 @@ export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
           </Link>
           {user ? (
             <>
+              <Link
+                className="focus-ring btn-secondary inline-flex h-10 w-10 items-center justify-center overflow-hidden rounded-full"
+                href="/profile"
+                aria-label="Profile"
+              >
+                {user.avatar_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img alt="" className="h-full w-full object-cover" src={user.avatar_url} />
+                ) : (
+                  <UserIcon size={17} aria-hidden />
+                )}
+              </Link>
               <span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-[#ededed] sm:flex">
                 <ShieldCheck size={16} aria-hidden />
                 {user.credits} credits
@@ -119,7 +129,7 @@ export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
 
       {mobileMenuOpen ? (
         <div className="border-t border-white/10 bg-[#0b090a]/95 backdrop-blur-xl md:hidden" id="mobile-site-menu">
-            <div className="mx-auto grid max-w-6xl gap-4 px-3 py-4">
+            <div className="mx-auto grid max-w-7xl gap-4 px-3 py-4">
             <nav className="grid gap-2">
               {navItems.map((item) => (
                 <Link className="focus-ring rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm font-black uppercase text-white" href={item.href} key={item.label} onClick={closeMobileMenu}>
@@ -136,6 +146,9 @@ export function SiteHeader({ user, onLogout }: SiteHeaderProps) {
             <div className="grid gap-2 border-t border-white/10 pt-4">
               {user ? (
                 <>
+                  <Link className="focus-ring rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm font-black uppercase text-white" href="/profile" onClick={closeMobileMenu}>
+                    Profile
+                  </Link>
                   <span className="inline-flex items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-3 text-sm font-bold text-slate-100">
                     <ShieldCheck size={16} aria-hidden />
                     {user.credits} credits available

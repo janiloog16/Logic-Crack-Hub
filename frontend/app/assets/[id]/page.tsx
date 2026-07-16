@@ -263,7 +263,7 @@ export default function AssetDetailPage() {
 
             <section className="glass-panel rounded-3xl p-5">
               <div className="flex items-start justify-between gap-3">
-                <div>
+              <div id="review">
                   <h2 className="text-2xl font-black text-white">{hasReview ? "Edit your review" : "Review asset"}</h2>
                   {hasReview ? <p className="mt-1 text-sm font-semibold text-red-100">Your saved review is loaded below.</p> : null}
                 </div>

@@ -3,12 +3,20 @@ package models
 import "time"
 
 type User struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Email     string    `json:"email"`
-	Role      string    `json:"role"`
-	Credits   int       `json:"credits"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Email       string    `json:"email"`
+	FirstName   string    `json:"first_name"`
+	LastName    string    `json:"last_name"`
+	FullName    string    `json:"full_name"`
+	Bio         string    `json:"bio"`
+	DateOfBirth string    `json:"date_of_birth"`
+	AvatarURL   string    `json:"avatar_url"`
+	Location    string    `json:"location"`
+	Website     string    `json:"website"`
+	Role        string    `json:"role"`
+	Credits     int       `json:"credits"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type Category struct {
@@ -46,6 +54,7 @@ type AssetRequest struct {
 	Reason              string    `json:"reason"`
 	Status              string    `json:"status"`
 	VoteCount           int       `json:"vote_count"`
+	Voted               bool      `json:"voted"`
 	RequestedBy         string    `json:"requested_by"`
 	CreatedAt           time.Time `json:"created_at"`
 }

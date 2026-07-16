@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -8,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +75,7 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	r.Handle("/uploads/*", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 
 	r.Route("/api", func(r chi.Router) {
 		r.With(s.limitSensitive("register", 5, 10*time.Minute)).Post("/auth/register", s.register)
@@ -84,11 +89,15 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/categories", s.listCategories)
 		r.Get("/assets", s.listAssets)
 		r.Get("/assets/{id}", s.getAsset)
+		r.Get("/users/{id}", s.publicProfile)
 		r.Get("/requests", s.listRequests)
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.authRequired)
 			r.Get("/auth/me", s.me)
+			r.Get("/profile", s.profile)
+			r.Put("/profile", s.updateProfile)
+			r.Post("/profile/avatar", s.uploadProfileAvatar)
 			r.Post("/auth/email-verification", s.createEmailVerification)
 			r.Get("/credits/history", s.creditHistory)
 			r.Post("/rewards/claim", s.claimReward)
@@ -186,8 +195,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email, ok := normalizeEmail(input.Email)
-	if !ok || input.Password == "" {
+	identifier := strings.ToLower(strings.TrimSpace(input.Email))
+	if email, ok := normalizeEmail(identifier); ok {
+		identifier = email
+	}
+	if identifier == "" || len(identifier) > 190 || input.Password == "" {
 		httpx.Error(w, http.StatusUnauthorized, "invalid email or password")
 		return
 	}
@@ -195,9 +207,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var user models.User
 	var passwordHash string
 	err := queryRowContext(s.db, r.Context(),
-		`SELECT id, name, email, password_hash, role, credits, created_at FROM users WHERE email = ?`,
-		email,
-	).Scan(&user.ID, &user.Name, &user.Email, &passwordHash, &user.Role, &user.Credits, &user.CreatedAt)
+		`SELECT id, name, email, password_hash, COALESCE(first_name, ''), COALESCE(last_name, ''), COALESCE(full_name, ''),
+		        COALESCE(bio, ''), COALESCE(date_of_birth::text, ''), COALESCE(avatar_url, ''), COALESCE(location, ''),
+		        COALESCE(website, ''), role, credits, created_at
+		 FROM users WHERE email = ?`,
+		identifier,
+	).Scan(
+		&user.ID, &user.Name, &user.Email, &passwordHash, &user.FirstName, &user.LastName, &user.FullName,
+		&user.Bio, &user.DateOfBirth, &user.AvatarURL, &user.Location, &user.Website, &user.Role, &user.Credits, &user.CreatedAt,
+	)
 	if errors.Is(err, sql.ErrNoRows) || !auth.CheckPassword(passwordHash, input.Password) {
 		httpx.Error(w, http.StatusUnauthorized, "invalid email or password")
 		return
@@ -559,9 +577,14 @@ func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	err = queryRowContext(tx, r.Context(),
 		`INSERT INTO users (name, email, password_hash, role, credits, email_verified_at)
 		 VALUES (?, ?, ?, 'user', 0, ?)
-		 RETURNING id, name, email, role, credits, created_at`,
+		 RETURNING id, name, email, COALESCE(first_name, ''), COALESCE(last_name, ''), COALESCE(full_name, ''),
+		           COALESCE(bio, ''), COALESCE(date_of_birth::text, ''), COALESCE(avatar_url, ''), COALESCE(location, ''),
+		           COALESCE(website, ''), role, credits, created_at`,
 		pending.Name, pending.Email, pending.PasswordHash, now,
-	).Scan(&user.ID, &user.Name, &user.Email, &user.Role, &user.Credits, &user.CreatedAt)
+	).Scan(
+		&user.ID, &user.Name, &user.Email, &user.FirstName, &user.LastName, &user.FullName,
+		&user.Bio, &user.DateOfBirth, &user.AvatarURL, &user.Location, &user.Website, &user.Role, &user.Credits, &user.CreatedAt,
+	)
 	if err != nil {
 		httpx.Error(w, http.StatusConflict, "email is already registered")
 		return
@@ -586,6 +609,134 @@ func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, currentUser(r))
+}
+
+func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	stats, err := s.profileStats(r.Context(), user.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not load profile")
+		return
+	}
+	activity, err := s.profileActivity(r.Context(), user.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not load profile")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"user": user, "stats": stats, "activity": activity})
+}
+
+func (s *Server) publicProfile(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	user, err := s.userByID(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpx.Error(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not load user")
+		return
+	}
+	stats, err := s.profileStats(r.Context(), user.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not load user")
+		return
+	}
+	publicUser := map[string]any{
+		"id":         user.ID,
+		"name":       user.Name,
+		"full_name":  user.FullName,
+		"bio":        user.Bio,
+		"avatar_url": user.AvatarURL,
+		"location":   user.Location,
+		"website":    user.Website,
+		"created_at": user.CreatedAt,
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"user": publicUser, "stats": stats})
+}
+
+func (s *Server) updateProfile(w http.ResponseWriter, r *http.Request) {
+	var input profilePayload
+	if err := httpx.Decode(r, &input); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	payload, ok := normalizeProfilePayload(input)
+	if !ok {
+		httpx.Error(w, http.StatusBadRequest, "profile fields are invalid or too long")
+		return
+	}
+
+	user := currentUser(r)
+	_, err := execContext(s.db, r.Context(),
+		`UPDATE users
+		 SET name = ?, first_name = ?, last_name = ?, full_name = ?, bio = ?, date_of_birth = NULLIF(?, '')::date,
+		     avatar_url = ?, location = ?, website = ?, updated_at = now()
+		 WHERE id = ?`,
+		payload.Name, payload.FirstName, payload.LastName, payload.FullName, payload.Bio, payload.DateOfBirth,
+		payload.AvatarURL, payload.Location, payload.Website, user.ID,
+	)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "could not update profile")
+		return
+	}
+
+	updated, err := s.userByID(r.Context(), user.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "profile updated but could not be loaded")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"user": updated})
+}
+
+func (s *Server) uploadProfileAvatar(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(6 << 20); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "image must be 5MB or smaller")
+		return
+	}
+	file, header, err := r.FormFile("avatar")
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "avatar image is required")
+		return
+	}
+	defer file.Close()
+
+	content, err := io.ReadAll(io.LimitReader(file, 5<<20+1))
+	if err != nil || len(content) == 0 || len(content) > 5<<20 {
+		httpx.Error(w, http.StatusBadRequest, "image must be 5MB or smaller")
+		return
+	}
+	contentType := http.DetectContentType(content)
+	extension := strings.ToLower(filepath.Ext(header.Filename))
+	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
+		httpx.Error(w, http.StatusBadRequest, "only JPG, PNG, or WEBP images are allowed")
+		return
+	}
+	if extension == "" {
+		extension = map[string]string{"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[contentType]
+	}
+
+	user := currentUser(r)
+	objectPath := fmt.Sprintf("avatars/user-%d-%d%s", user.ID, time.Now().Unix(), extension)
+	avatarURL, err := s.storeAvatar(r.Context(), r, objectPath, contentType, content)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not upload avatar")
+		return
+	}
+	_, err = execContext(s.db, r.Context(), `UPDATE users SET avatar_url = ?, updated_at = now() WHERE id = ?`, avatarURL, user.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "avatar uploaded but profile could not be updated")
+		return
+	}
+	updated, err := s.userByID(r.Context(), user.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "avatar uploaded but profile could not be loaded")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"avatar_url": avatarURL, "user": updated})
 }
 
 func (s *Server) listCategories(w http.ResponseWriter, r *http.Request) {
@@ -1063,12 +1214,23 @@ func (s *Server) creditHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listRequests(w http.ResponseWriter, r *http.Request) {
+	var userID int64
+	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
+		if claims, err := auth.ParseToken(s.cfg.JWTSecret, strings.TrimPrefix(header, "Bearer ")); err == nil {
+			userID = claims.UserID
+		}
+	}
+
 	rows, err := queryContext(s.db, r.Context(),
 		`SELECT ar.id, ar.title, ar.unity_asset_store_link, ar.reason, ar.status, ar.vote_count,
-		        COALESCE(u.name, 'Guest'), ar.created_at
+		        COALESCE(u.name, 'Guest'), ar.created_at,
+		        CASE WHEN ? > 0 THEN EXISTS(
+		          SELECT 1 FROM request_votes rv WHERE rv.request_id = ar.id AND rv.user_id = ?
+		        ) ELSE FALSE END
 		 FROM asset_requests ar
 		 LEFT JOIN users u ON u.id = ar.requested_by
 		 ORDER BY ar.vote_count DESC, ar.created_at DESC`,
+		userID, userID,
 	)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "could not load requests")
@@ -1079,7 +1241,10 @@ func (s *Server) listRequests(w http.ResponseWriter, r *http.Request) {
 	requests := []models.AssetRequest{}
 	for rows.Next() {
 		var request models.AssetRequest
-		if err := rows.Scan(&request.ID, &request.Title, &request.UnityAssetStoreLink, &request.Reason, &request.Status, &request.VoteCount, &request.RequestedBy, &request.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&request.ID, &request.Title, &request.UnityAssetStoreLink, &request.Reason, &request.Status,
+			&request.VoteCount, &request.RequestedBy, &request.CreatedAt, &request.Voted,
+		); err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "could not read requests")
 			return
 		}
@@ -1137,17 +1302,9 @@ func (s *Server) voteRequest(w http.ResponseWriter, r *http.Request) {
 
 	var voteID int64
 	err = queryRowContext(tx, r.Context(), `SELECT id FROM request_votes WHERE user_id = ? AND request_id = ?`, userID, requestID).Scan(&voteID)
-	voted := true
 	if err == nil {
-		if _, err := execContext(tx, r.Context(), `DELETE FROM request_votes WHERE id = ?`, voteID); err != nil {
-			httpx.Error(w, http.StatusInternalServerError, "could not remove vote")
-			return
-		}
-		if _, err := execContext(tx, r.Context(), `UPDATE asset_requests SET vote_count = GREATEST(vote_count - 1, 0) WHERE id = ?`, requestID); err != nil {
-			httpx.Error(w, http.StatusInternalServerError, "could not update request")
-			return
-		}
-		voted = false
+		httpx.JSON(w, http.StatusOK, map[string]any{"voted": true, "already_voted": true})
+		return
 	} else if errors.Is(err, sql.ErrNoRows) {
 		if _, err := execContext(tx, r.Context(), `INSERT INTO request_votes (user_id, request_id) VALUES (?, ?)`, userID, requestID); err != nil {
 			httpx.Error(w, http.StatusBadRequest, "could not add vote")
@@ -1166,7 +1323,7 @@ func (s *Server) voteRequest(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "could not finish vote")
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"voted": voted})
+	httpx.JSON(w, http.StatusOK, map[string]any{"voted": true, "already_voted": false})
 }
 
 func (s *Server) updateRequestStatus(w http.ResponseWriter, r *http.Request) {
@@ -1199,7 +1356,7 @@ func (s *Server) updateRequestStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminListUsers(w http.ResponseWriter, r *http.Request) {
 	rows, err := queryContext(s.db, r.Context(),
-		`SELECT id, name, email, role, credits, created_at FROM users ORDER BY created_at DESC LIMIT 200`,
+		userSelectSQL()+` ORDER BY created_at DESC LIMIT 200`,
 	)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "could not load users")
@@ -1209,8 +1366,8 @@ func (s *Server) adminListUsers(w http.ResponseWriter, r *http.Request) {
 
 	users := []models.User{}
 	for rows.Next() {
-		var user models.User
-		if err := rows.Scan(&user.ID, &user.Name, &user.Email, &user.Role, &user.Credits, &user.CreatedAt); err != nil {
+		user, err := scanUser(rows)
+		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "could not read users")
 			return
 		}
@@ -1446,15 +1603,33 @@ func (s *Server) adminRequired(next http.Handler) http.Handler {
 }
 
 func (s *Server) userByID(ctx context.Context, id int64) (*models.User, error) {
-	var user models.User
 	err := queryRowContext(s.db, ctx,
-		`SELECT id, name, email, role, credits, created_at FROM users WHERE id = ?`,
+		userSelectSQL()+` WHERE id = ?`,
 		id,
-	).Scan(&user.ID, &user.Name, &user.Email, &user.Role, &user.Credits, &user.CreatedAt)
-	if err != nil {
-		return nil, err
+	)
+	user, scanErr := scanUser(err)
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	return &user, nil
+}
+
+func userSelectSQL() string {
+	return `SELECT id, name, email, COALESCE(first_name, ''), COALESCE(last_name, ''), COALESCE(full_name, ''),
+	              COALESCE(bio, ''), COALESCE(date_of_birth::text, ''), COALESCE(avatar_url, ''), COALESCE(location, ''),
+	              COALESCE(website, ''), role, credits, created_at FROM users`
+}
+
+func scanUser(scanner rowScanner) (models.User, error) {
+	var user models.User
+	err := scanner.Scan(
+		&user.ID, &user.Name, &user.Email, &user.FirstName, &user.LastName, &user.FullName,
+		&user.Bio, &user.DateOfBirth, &user.AvatarURL, &user.Location, &user.Website, &user.Role, &user.Credits, &user.CreatedAt,
+	)
+	if err != nil {
+		return user, err
+	}
+	return user, nil
 }
 
 func currentUser(r *http.Request) *models.User {
@@ -1472,6 +1647,181 @@ func (s *Server) logAdminAction(ctx context.Context, adminID int64, action, targ
 		 VALUES (?, ?, ?, ?, ?::jsonb)`,
 		adminID, action, targetType, targetID, string(rawMetadata),
 	)
+}
+
+type profilePayload struct {
+	Name        string `json:"name"`
+	FirstName   string `json:"first_name"`
+	LastName    string `json:"last_name"`
+	FullName    string `json:"full_name"`
+	Bio         string `json:"bio"`
+	DateOfBirth string `json:"date_of_birth"`
+	AvatarURL   string `json:"avatar_url"`
+	Location    string `json:"location"`
+	Website     string `json:"website"`
+}
+
+func normalizeProfilePayload(input profilePayload) (profilePayload, bool) {
+	input.Name = strings.TrimSpace(input.Name)
+	input.FirstName = strings.TrimSpace(input.FirstName)
+	input.LastName = strings.TrimSpace(input.LastName)
+	input.FullName = strings.TrimSpace(input.FullName)
+	input.Bio = strings.TrimSpace(input.Bio)
+	input.DateOfBirth = strings.TrimSpace(input.DateOfBirth)
+	input.AvatarURL = strings.TrimSpace(input.AvatarURL)
+	input.Location = strings.TrimSpace(input.Location)
+	input.Website = strings.TrimSpace(input.Website)
+
+	if input.Name == "" && input.FullName != "" {
+		input.Name = input.FullName
+	}
+	if input.FullName == "" {
+		input.FullName = strings.TrimSpace(strings.Join([]string{input.FirstName, input.LastName}, " "))
+	}
+	if input.Name == "" {
+		return input, false
+	}
+	if len(input.Name) > 120 || len(input.FirstName) > 80 || len(input.LastName) > 80 || len(input.FullName) > 160 ||
+		len(input.Bio) > 600 || len(input.Location) > 120 || len(input.Website) > 300 || len(input.AvatarURL) > 700 {
+		return input, false
+	}
+	if input.DateOfBirth != "" {
+		if _, err := time.Parse("2006-01-02", input.DateOfBirth); err != nil {
+			return input, false
+		}
+	}
+	if !validHTTPURL(input.AvatarURL, false) || !validHTTPURL(input.Website, false) {
+		return input, false
+	}
+	return input, true
+}
+
+func (s *Server) profileStats(ctx context.Context, userID int64) (map[string]int64, error) {
+	var favorites, reviews, downloads, requests, creditEvents int64
+	err := queryRowContext(s.db, ctx,
+		`SELECT
+		  (SELECT COUNT(*) FROM favorites WHERE user_id = ?),
+		  (SELECT COUNT(*) FROM reviews WHERE user_id = ?),
+		  (SELECT COUNT(*) FROM downloads WHERE user_id = ?),
+		  (SELECT COUNT(*) FROM asset_requests WHERE requested_by = ?),
+		  (SELECT COUNT(*) FROM credit_transactions WHERE user_id = ?)`,
+		userID, userID, userID, userID, userID,
+	).Scan(&favorites, &reviews, &downloads, &requests, &creditEvents)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]int64{
+		"favorites":     favorites,
+		"reviews":       reviews,
+		"downloads":     downloads,
+		"requests":      requests,
+		"credit_events": creditEvents,
+	}, nil
+}
+
+func (s *Server) profileActivity(ctx context.Context, userID int64) (map[string]any, error) {
+	var downloadsRaw, favoritesRaw, reviewsRaw string
+	err := queryRowContext(s.db, ctx,
+		`SELECT
+		  COALESCE((
+		    SELECT jsonb_agg(item ORDER BY (item->>'created_at')::timestamptz DESC)::text
+		    FROM (
+		      SELECT jsonb_build_object('id', a.id, 'title', a.title, 'slug', a.slug, 'thumbnail_url', a.thumbnail_url, 'created_at', MAX(d.created_at)) AS item
+		      FROM downloads d
+		      JOIN assets a ON a.id = d.asset_id
+		      WHERE d.user_id = ?
+		      GROUP BY a.id, a.title, a.slug, a.thumbnail_url
+		      ORDER BY MAX(d.created_at) DESC
+		      LIMIT 8
+		    ) latest_downloads
+		  ), '[]'),
+		  COALESCE((
+		    SELECT jsonb_agg(item ORDER BY (item->>'created_at')::timestamptz DESC)::text
+		    FROM (
+		      SELECT jsonb_build_object('id', a.id, 'title', a.title, 'slug', a.slug, 'thumbnail_url', a.thumbnail_url, 'created_at', f.created_at) AS item
+		      FROM favorites f
+		      JOIN assets a ON a.id = f.asset_id
+		      WHERE f.user_id = ?
+		      ORDER BY f.created_at DESC
+		      LIMIT 8
+		    ) latest_favorites
+		  ), '[]'),
+		  COALESCE((
+		    SELECT jsonb_agg(item ORDER BY (item->>'updated_at')::timestamptz DESC)::text
+		    FROM (
+		      SELECT jsonb_build_object('id', a.id, 'title', a.title, 'slug', a.slug, 'thumbnail_url', a.thumbnail_url, 'rating', r.rating, 'comment', COALESCE(r.comment, ''), 'updated_at', r.updated_at) AS item
+		      FROM reviews r
+		      JOIN assets a ON a.id = r.asset_id
+		      WHERE r.user_id = ?
+		      ORDER BY r.updated_at DESC
+		      LIMIT 8
+		    ) latest_reviews
+		  ), '[]')`,
+		userID, userID, userID,
+	).Scan(&downloadsRaw, &favoritesRaw, &reviewsRaw)
+	if err != nil {
+		return nil, err
+	}
+	downloads := decodeProfileItems(downloadsRaw)
+	favorites := decodeProfileItems(favoritesRaw)
+	reviews := decodeProfileItems(reviewsRaw)
+	return map[string]any{"downloads": downloads, "favorites": favorites, "reviews": reviews}, nil
+}
+
+func decodeProfileItems(raw string) []map[string]any {
+	items := []map[string]any{}
+	_ = json.Unmarshal([]byte(raw), &items)
+	return items
+}
+
+func (s *Server) uploadSupabaseObject(ctx context.Context, objectPath, contentType string, content []byte) (string, error) {
+	baseURL := strings.TrimRight(s.cfg.SupabaseURL, "/")
+	bucket := strings.Trim(s.cfg.SupabaseAssetBucket, "/")
+	if bucket == "" {
+		bucket = "assets"
+	}
+	uploadURL := fmt.Sprintf("%s/storage/v1/object/%s/%s", baseURL, url.PathEscape(bucket), objectPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(content))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.cfg.SupabaseServiceKey)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Cache-Control", "3600")
+	req.Header.Set("x-upsert", "true")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("supabase storage returned %d", resp.StatusCode)
+	}
+	return fmt.Sprintf("%s/storage/v1/object/public/%s/%s", baseURL, url.PathEscape(bucket), objectPath), nil
+}
+
+func (s *Server) storeAvatar(ctx context.Context, r *http.Request, objectPath, contentType string, content []byte) (string, error) {
+	if strings.TrimSpace(s.cfg.SupabaseURL) != "" && strings.TrimSpace(s.cfg.SupabaseServiceKey) != "" {
+		return s.uploadSupabaseObject(ctx, objectPath, contentType, content)
+	}
+
+	localPath := filepath.Join("uploads", filepath.FromSlash(objectPath))
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(localPath, content, 0o644); err != nil {
+		return "", err
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	host := r.Host
+	if host == "" {
+		host = "127.0.0.1:8080"
+	}
+	return fmt.Sprintf("%s://%s/uploads/%s", scheme, host, objectPath), nil
 }
 
 type assetPayload struct {

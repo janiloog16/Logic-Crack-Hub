@@ -63,17 +63,20 @@ export function RequestBoard({
                 </div>
               </div>
               <button
-                className="focus-ring btn-secondary inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-sm font-bold disabled:opacity-50"
-                disabled={!user || votingRequestId === request.id}
+                className={`focus-ring btn-secondary inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-sm font-bold disabled:opacity-50 ${
+                  request.voted ? "border-red-300/30 bg-red-500/10 text-red-100" : ""
+                }`}
+                disabled={!user || request.voted || votingRequestId === request.id}
                 onClick={() => onVote(request.id)}
                 type="button"
+                title={request.voted ? "You already voted for this request" : "Vote for this request"}
               >
                 {votingRequestId === request.id ? (
                   <LoadingSpinner label={String(request.vote_count)} />
                 ) : (
                   <>
                     <ThumbsUp size={15} aria-hidden />
-                    {request.vote_count}
+                    {request.voted ? "Voted" : request.vote_count}
                   </>
                 )}
               </button>

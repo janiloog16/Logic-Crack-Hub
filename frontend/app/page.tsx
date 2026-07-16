@@ -178,6 +178,7 @@ export default function Home() {
           reason: requestReason,
           status: "open",
           vote_count: 0,
+          voted: false,
           requested_by: user.name,
           created_at: new Date().toISOString(),
         },
@@ -193,17 +194,29 @@ export default function Home() {
   }
 
   async function voteRequest(id: number) {
-    if (!user || votingRequestId === id) {
+    const selectedRequest = requests.find((request) => request.id === id);
+    if (!user || votingRequestId === id || selectedRequest?.voted) {
       return;
     }
     setVotingRequestId(id);
     try {
-      await apiFetch(`/requests/${id}/vote`, { method: "POST" });
+      const response = await apiFetch<{ voted: boolean; already_voted: boolean }>(`/requests/${id}/vote`, { method: "POST" });
+      setRequests((current) =>
+        current.map((request) =>
+          request.id === id
+            ? {
+                ...request,
+                voted: true,
+                vote_count: response.already_voted ? request.vote_count : request.vote_count + 1,
+              }
+            : request,
+        ),
+      );
     } catch {
-      // Keep local voting responsive while the API is unavailable.
+      // Keep the existing state if the vote could not be saved.
+    } finally {
+      setVotingRequestId(null);
     }
-    setRequests((current) => current.map((request) => (request.id === id ? { ...request, vote_count: request.vote_count + 1 } : request)));
-    setVotingRequestId(null);
   }
 
   function logout() {
@@ -303,34 +316,6 @@ export default function Home() {
                     ))}
                   </select>
                 </label>
-              </div>
-
-              <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-                <button
-                  className={`focus-ring whitespace-nowrap rounded-full px-4 py-2 text-sm font-black transition ${
-                    category === "all"
-                      ? "bg-[#e53935] text-white shadow-[0_12px_28px_rgba(229,57,53,0.22)]"
-                      : "border border-white/10 bg-white/[0.04] text-[#d7d7d7] hover:border-red-400/50 hover:text-white"
-                  }`}
-                  onClick={() => setCategory("all")}
-                  type="button"
-                >
-                  All
-                </button>
-                {categories.map((item) => (
-                  <button
-                    className={`focus-ring whitespace-nowrap rounded-full px-4 py-2 text-sm font-black transition ${
-                      category === item.slug
-                        ? "bg-[#e53935] text-white shadow-[0_12px_28px_rgba(229,57,53,0.22)]"
-                        : "border border-white/10 bg-white/[0.04] text-[#d7d7d7] hover:border-red-400/50 hover:text-white"
-                    }`}
-                    key={item.id}
-                    onClick={() => setCategory(item.slug)}
-                    type="button"
-                  >
-                    {item.name}
-                  </button>
-                ))}
               </div>
 
               <div className="mt-4 flex gap-2 overflow-x-auto pb-1">

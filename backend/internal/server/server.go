@@ -3,7 +3,9 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -52,6 +54,21 @@ var dailyRewards = map[int]int{
 	7: 100,
 }
 
+type creditPackage struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Credits     int    `json:"credits"`
+	AmountCents int    `json:"amount_cents"`
+	Currency    string `json:"currency"`
+	Badge       string `json:"badge"`
+}
+
+var creditPackages = []creditPackage{
+	{ID: "starter", Name: "Starter Pack", Credits: 100, AmountCents: 199, Currency: "usd", Badge: "For quick downloads"},
+	{ID: "builder", Name: "Builder Pack", Credits: 350, AmountCents: 499, Currency: "usd", Badge: "Best for regular users"},
+	{ID: "studio", Name: "Studio Pack", Credits: 900, AmountCents: 999, Currency: "usd", Badge: "Most value"},
+}
+
 func New(db *sql.DB, cfg config.Config) *Server {
 	return &Server{
 		db:          db,
@@ -91,6 +108,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/assets/{id}", s.getAsset)
 		r.Get("/users/{id}", s.publicProfile)
 		r.Get("/requests", s.listRequests)
+		r.Post("/stripe/webhook", s.stripeWebhook)
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.authRequired)
@@ -100,6 +118,8 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/profile/avatar", s.uploadProfileAvatar)
 			r.Post("/auth/email-verification", s.createEmailVerification)
 			r.Get("/credits/history", s.creditHistory)
+			r.Get("/credits/packages", s.creditPackages)
+			r.Post("/credits/checkout", s.createCreditCheckout)
 			r.Post("/rewards/claim", s.claimReward)
 			r.Post("/assets/{id}/download", s.downloadAsset)
 			r.Get("/assets/{id}/me", s.getMyAssetState)
@@ -1223,6 +1243,98 @@ func (s *Server) creditHistory(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"transactions": transactions})
 }
 
+func (s *Server) creditPackages(w http.ResponseWriter, r *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]any{"packages": creditPackages})
+}
+
+func (s *Server) createCreditCheckout(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(s.cfg.StripeSecretKey) == "" {
+		httpx.Error(w, http.StatusServiceUnavailable, "payments are not configured yet")
+		return
+	}
+	var input struct {
+		PackageID string `json:"package_id"`
+	}
+	if err := httpx.Decode(r, &input); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	pkg, ok := findCreditPackage(input.PackageID)
+	if !ok {
+		httpx.Error(w, http.StatusBadRequest, "credit package not found")
+		return
+	}
+	user := currentUser(r)
+	var purchaseID int64
+	err := queryRowContext(s.db, r.Context(),
+		`INSERT INTO credit_purchases (user_id, package_id, credits, amount_cents, currency, status)
+		 VALUES (?, ?, ?, ?, ?, 'pending')
+		 RETURNING id`,
+		user.ID, pkg.ID, pkg.Credits, pkg.AmountCents, pkg.Currency,
+	).Scan(&purchaseID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not start payment")
+		return
+	}
+
+	session, err := s.createStripeCheckoutSession(r.Context(), user, pkg, purchaseID)
+	if err != nil {
+		_, _ = execContext(s.db, r.Context(), `UPDATE credit_purchases SET status = 'failed' WHERE id = ?`, purchaseID)
+		httpx.Error(w, http.StatusBadGateway, "could not open Stripe checkout")
+		return
+	}
+	_, err = execContext(s.db, r.Context(),
+		`UPDATE credit_purchases SET stripe_session_id = ? WHERE id = ?`,
+		session.ID, purchaseID,
+	)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "payment started but could not be recorded")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"checkout_url": session.URL})
+}
+
+func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid webhook body")
+		return
+	}
+	if strings.TrimSpace(s.cfg.StripeWebhookSecret) != "" && !validStripeSignature(raw, r.Header.Get("Stripe-Signature"), s.cfg.StripeWebhookSecret) {
+		httpx.Error(w, http.StatusUnauthorized, "invalid Stripe signature")
+		return
+	}
+	var event struct {
+		ID   string          `json:"id"`
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &event); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid Stripe event")
+		return
+	}
+	if event.Type != "checkout.session.completed" {
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ignored"})
+		return
+	}
+	var data struct {
+		Object stripeCheckoutSession `json:"object"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid checkout session event")
+		return
+	}
+	if data.Object.PaymentStatus != "paid" {
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "not_paid"})
+		return
+	}
+	if err := s.completeCreditPurchase(r.Context(), data.Object.ID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "could not complete credit purchase")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "credited"})
+}
+
 func (s *Server) listRequests(w http.ResponseWriter, r *http.Request) {
 	var userID int64
 	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
@@ -2250,6 +2362,134 @@ func (s *Server) messageByID(ctx context.Context, messageID int64) (models.Messa
 	return message, err
 }
 
+type stripeCheckoutSession struct {
+	ID            string            `json:"id"`
+	URL           string            `json:"url"`
+	PaymentStatus string            `json:"payment_status"`
+	Metadata      map[string]string `json:"metadata"`
+}
+
+func findCreditPackage(packageID string) (creditPackage, bool) {
+	for _, item := range creditPackages {
+		if item.ID == packageID {
+			return item, true
+		}
+	}
+	return creditPackage{}, false
+}
+
+func (s *Server) createStripeCheckoutSession(ctx context.Context, user *models.User, pkg creditPackage, purchaseID int64) (stripeCheckoutSession, error) {
+	form := url.Values{}
+	form.Set("mode", "payment")
+	form.Set("success_url", s.cfg.PublicAppURL+"/credits?payment=success")
+	form.Set("cancel_url", s.cfg.PublicAppURL+"/credits?payment=cancelled")
+	form.Set("client_reference_id", strconv.FormatInt(user.ID, 10))
+	if _, err := mail.ParseAddress(user.Email); err == nil {
+		form.Set("customer_email", user.Email)
+	}
+	form.Set("line_items[0][quantity]", "1")
+	form.Set("line_items[0][price_data][currency]", pkg.Currency)
+	form.Set("line_items[0][price_data][unit_amount]", strconv.Itoa(pkg.AmountCents))
+	form.Set("line_items[0][price_data][product_data][name]", pkg.Name)
+	form.Set("line_items[0][price_data][product_data][description]", fmt.Sprintf("%d Logic Crack Hub credits", pkg.Credits))
+	form.Set("metadata[purchase_id]", strconv.FormatInt(purchaseID, 10))
+	form.Set("metadata[user_id]", strconv.FormatInt(user.ID, 10))
+	form.Set("metadata[credits]", strconv.Itoa(pkg.Credits))
+	form.Set("metadata[package_id]", pkg.ID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.stripe.com/v1/checkout/sessions", strings.NewReader(form.Encode()))
+	if err != nil {
+		return stripeCheckoutSession{}, err
+	}
+	req.SetBasicAuth(s.cfg.StripeSecretKey, "")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return stripeCheckoutSession{}, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return stripeCheckoutSession{}, fmt.Errorf("stripe checkout returned %d: %s", resp.StatusCode, string(body))
+	}
+	var session stripeCheckoutSession
+	if err := json.Unmarshal(body, &session); err != nil {
+		return stripeCheckoutSession{}, err
+	}
+	if session.ID == "" || session.URL == "" {
+		return stripeCheckoutSession{}, errors.New("stripe checkout session missing url")
+	}
+	return session, nil
+}
+
+func validStripeSignature(payload []byte, header, secret string) bool {
+	var timestamp string
+	signatures := []string{}
+	for _, part := range strings.Split(header, ",") {
+		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "t":
+			timestamp = value
+		case "v1":
+			signatures = append(signatures, value)
+		}
+	}
+	if timestamp == "" || len(signatures) == 0 {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	expected := mac.Sum(nil)
+	for _, signature := range signatures {
+		decoded, err := hex.DecodeString(signature)
+		if err == nil && hmac.Equal(decoded, expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) completeCreditPurchase(ctx context.Context, sessionID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var purchaseID, userID int64
+	var credits int
+	var status string
+	err = queryRowContext(tx, ctx,
+		`SELECT id, user_id, credits, status FROM credit_purchases WHERE stripe_session_id = ? FOR UPDATE`,
+		sessionID,
+	).Scan(&purchaseID, &userID, &credits, &status)
+	if err != nil {
+		return err
+	}
+	if status == "completed" {
+		return tx.Commit()
+	}
+	if _, err := execContext(tx, ctx, `UPDATE users SET credits = credits + ? WHERE id = ?`, credits, userID); err != nil {
+		return err
+	}
+	if _, err := execContext(tx, ctx,
+		`INSERT INTO credit_transactions (user_id, amount, type, description, metadata)
+		 VALUES (?, ?, 'stripe_purchase', ?, ?::jsonb)`,
+		userID, credits, "Purchased credits with Stripe", fmt.Sprintf(`{"stripe_session_id":%q,"purchase_id":%d}`, sessionID, purchaseID),
+	); err != nil {
+		return err
+	}
+	if _, err := execContext(tx, ctx, `UPDATE credit_purchases SET status = 'completed', completed_at = now() WHERE id = ?`, purchaseID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Server) uploadSupabaseObject(ctx context.Context, objectPath, contentType string, content []byte) (string, error) {
 	baseURL := strings.TrimRight(s.cfg.SupabaseURL, "/")
 	bucket := strings.Trim(s.cfg.SupabaseAssetBucket, "/")
@@ -2280,6 +2520,9 @@ func (s *Server) uploadSupabaseObject(ctx context.Context, objectPath, contentTy
 func (s *Server) storeAvatar(ctx context.Context, r *http.Request, objectPath, contentType string, content []byte) (string, error) {
 	if strings.TrimSpace(s.cfg.SupabaseURL) != "" && strings.TrimSpace(s.cfg.SupabaseServiceKey) != "" {
 		return s.uploadSupabaseObject(ctx, objectPath, contentType, content)
+	}
+	if os.Getenv("NETLIFY") != "" || os.Getenv("AWS_LAMBDA_FUNCTION_NAME") != "" {
+		return "", errors.New("supabase storage is not configured")
 	}
 
 	localPath := filepath.Join("uploads", filepath.FromSlash(objectPath))

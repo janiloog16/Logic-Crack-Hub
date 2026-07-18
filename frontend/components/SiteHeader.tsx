@@ -113,7 +113,9 @@ export function SiteHeader({ user, onLogout, unreadMessages }: SiteHeaderProps) 
               </Link>
               <span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-[#ededed] sm:flex">
                 <ShieldCheck size={16} aria-hidden />
-                {user.credits} credits
+                <Link className="transition hover:text-white" href="/credits">
+                  {user.credits} credits
+                </Link>
               </span>
               <button
                 className="focus-ring btn-secondary inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold"

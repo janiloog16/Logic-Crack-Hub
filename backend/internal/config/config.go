@@ -17,6 +17,9 @@ type Config struct {
 	SupabaseURL         string
 	SupabaseServiceKey  string
 	SupabaseAssetBucket string
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	PublicAppURL        string
 	CORSAllowedOrigins  []string
 }
 
@@ -33,6 +36,9 @@ func Load() Config {
 		SupabaseURL:         value("SUPABASE_URL", ""),
 		SupabaseServiceKey:  value("SUPABASE_SERVICE_ROLE_KEY", ""),
 		SupabaseAssetBucket: value("SUPABASE_ASSET_BUCKET", "assets"),
+		StripeSecretKey:     value("STRIPE_SECRET_KEY", ""),
+		StripeWebhookSecret: value("STRIPE_WEBHOOK_SECRET", ""),
+		PublicAppURL:        strings.TrimRight(value("PUBLIC_APP_URL", "http://localhost:3000"), "/"),
 		CORSAllowedOrigins:  split(value("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")),
 	}
 }

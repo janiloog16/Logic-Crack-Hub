@@ -4,6 +4,7 @@ import type {
   Category,
   Conversation,
   ConversationUser,
+  CreditPackage,
   CreditTransaction,
   Message,
   Notification,
@@ -43,6 +44,10 @@ export type NotificationsResponse = {
 
 export type TransactionsResponse = {
   transactions: CreditTransaction[];
+};
+
+export type CreditPackagesResponse = {
+  packages: CreditPackage[];
 };
 
 export type StatsResponse = {

@@ -100,6 +100,15 @@ export type CreditTransaction = {
   created_at: string;
 };
 
+export type CreditPackage = {
+  id: string;
+  name: string;
+  credits: number;
+  amount_cents: number;
+  currency: string;
+  badge: string;
+};
+
 export type ConversationUser = {
   id: number;
   name: string;

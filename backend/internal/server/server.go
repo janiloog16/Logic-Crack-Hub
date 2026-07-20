@@ -2502,6 +2502,7 @@ func (s *Server) uploadSupabaseObject(ctx context.Context, objectPath, contentTy
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+s.cfg.SupabaseServiceKey)
+	req.Header.Set("apikey", s.cfg.SupabaseServiceKey)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Cache-Control", "3600")
 	req.Header.Set("x-upsert", "true")
@@ -2512,7 +2513,8 @@ func (s *Server) uploadSupabaseObject(ctx context.Context, objectPath, contentTy
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("supabase storage returned %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("supabase storage returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return fmt.Sprintf("%s/storage/v1/object/public/%s/%s", baseURL, url.PathEscape(bucket), objectPath), nil
 }
